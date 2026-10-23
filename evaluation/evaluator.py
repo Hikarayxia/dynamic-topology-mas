@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Literal
 
 import numpy as np
@@ -11,6 +11,7 @@ from agents import ReplacementSearchAgent, RuleBasedSearchAgent, SharedPolicyAge
 from algorithms import SharedGraphActorCritic
 from core import AgentAttributes
 from environments import Continuous2DConfig, Continuous2DSearchEnv
+from interaction import CommunicationConfig
 
 from .metrics import (
     EpisodeMetrics,
@@ -53,6 +54,9 @@ class ExperimentScenario:
     height: float = 50.0
     link_faults: tuple[LinkFaultSpec, ...] = ()
     node_faults: tuple[NodeFaultSpec, ...] = ()
+    communication_config: CommunicationConfig = field(default_factory=CommunicationConfig)
+    neighbor_observation_mode: str = "communicated"
+    neighbor_state_ttl: float = 1.0
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -127,7 +131,10 @@ def _build_environment(
             height=scenario.height,
             max_steps=scenario.max_steps,
             n_targets=scenario.n_targets,
-        )
+            neighbor_observation_mode=scenario.neighbor_observation_mode,
+            neighbor_state_ttl=scenario.neighbor_state_ttl,
+        ),
+        scenario.communication_config,
     )
     attributes = AgentAttributes(
         agent_type="uav",
@@ -207,7 +214,6 @@ def run_episode(
             for agent_id, observation in observations.items()
         }
         result = environment.step(actions)
-        acted_ids = tuple(actions)
         velocities = [
             agent.state.velocity
             for agent in environment.agents.values()
@@ -216,7 +222,7 @@ def run_episode(
         traces.append(
             StepTrace(
                 timestamp=float(result.info["time"]),
-                team_reward=float(np.mean([result.rewards[key] for key in acted_ids])),
+                team_reward=float(result.info["team_reward"]),
                 detection_ratio=float(result.info["detection_ratio"]),
                 connectivity_ratio=float(result.info["connectivity_ratio"]),
                 consistency_error=velocity_consistency_error(velocities),

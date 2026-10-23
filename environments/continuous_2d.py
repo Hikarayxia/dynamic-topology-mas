@@ -44,6 +44,8 @@ class Continuous2DConfig:
     connectivity_penalty: float = 0.1
     energy_cost: float = 0.001
     replacement_lane_tolerance: float = 1.0
+    neighbor_observation_mode: str = "communicated"
+    neighbor_state_ttl: float = 1.0
 
     def __post_init__(self) -> None:
         for name in ("width", "height", "dt"):
@@ -55,6 +57,10 @@ class Continuous2DConfig:
             raise ValueError("max_steps 必须为正整数")
         if self.n_targets < 0:
             raise ValueError("n_targets 不能为负数")
+        if self.neighbor_observation_mode not in {"communicated", "oracle"}:
+            raise ValueError("neighbor_observation_mode 必须为 communicated 或 oracle")
+        if not math.isfinite(self.neighbor_state_ttl) or self.neighbor_state_ttl <= 0:
+            raise ValueError("neighbor_state_ttl 必须是正有限数值")
         for name in (
             "detection_reward",
             "completion_bonus",
@@ -119,6 +125,29 @@ class NodeFault:
     end_time: float
 
 
+@dataclass
+class _StateMessageReceiver:
+    """将状态包送到观测缓存，其他消息仍交给智能体的协议收件箱。"""
+
+    agent: BaseAgent
+    cache: dict[Hashable, Message]
+
+    def receive_message(self, message: Message) -> None:
+        if message.metadata.get("kind") != "neighbor_state":
+            self.agent.receive_message(message)
+            return
+        try:
+            payload = np.asarray(message.payload, dtype=np.float64)
+        except (ValueError, TypeError):
+            return
+        if payload.shape != (5,) or not np.all(np.isfinite(payload)):
+            return
+        previous = self.cache.get(message.sender)
+        # 抖动会令旧包晚到，旧快照不能覆盖已经收到的新快照。
+        if previous is None or message.created_at > previous.created_at:
+            self.cache[message.sender] = message
+
+
 class Continuous2DSearchEnv(BaseEnvironment):
     """连续二维协同搜索环境。
 
@@ -158,6 +187,7 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._last_replacement_targets: tuple[str, ...] = ()
         self._replacement_roster: dict[str, Hashable] = {}
         self._replacement_roster_count = 0
+        self._neighbor_state_cache: dict[Hashable, dict[Hashable, Message]] = {}
 
     @property
     def step_count(self) -> int:
@@ -190,11 +220,15 @@ class Continuous2DSearchEnv(BaseEnvironment):
 
         super().add_agent(agent, node_id=node_id, node_metadata=node_metadata)
         self.communication.register_endpoint(agent.id, self.node_for_agent(agent.id))
+        self._neighbor_state_cache[agent.id] = {}
 
     def remove_agent(self, agent_id: Hashable) -> BaseAgent:
         """移除智能体并清理通信端点。"""
 
         self.communication.unregister_endpoint(agent_id)
+        self._neighbor_state_cache.pop(agent_id, None)
+        for cache in self._neighbor_state_cache.values():
+            cache.pop(agent_id, None)
         return super().remove_agent(agent_id)
 
     def schedule_link_fault(
@@ -234,6 +268,7 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._fault_forced_offline.clear()
         self._last_delivery_results = ()
         self._last_info = {}
+        self._neighbor_state_cache = {agent_id: {} for agent_id in self._agents}
         # 补位响应和恢复时间属于单回合实验状态，重置时不得泄漏到下一回合。
         self._replacement_records.clear()
         self._replacement_known_missing = ()
@@ -268,6 +303,8 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._targets = self._create_targets()
         self._apply_node_faults(self.current_time)
         self._refresh_distance_topology(self.current_time)
+        self._broadcast_neighbor_states()
+        self._last_delivery_results = self._deliver_messages(self.current_time)
         return self._build_observations()
 
     def step(self, actions: Mapping[Hashable, Action]) -> StepResult:
@@ -288,9 +325,8 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._step_count += 1
         self._apply_node_faults(next_time)
         self._refresh_distance_topology(next_time)
-        self._last_delivery_results = self.communication.advance_time(
-            next_time, self._agents
-        )
+        self._broadcast_neighbor_states()
+        self._last_delivery_results = self._deliver_messages(next_time)
 
         newly_discovered = self._detect_targets(next_time)
         collision_count = self._count_collisions()
@@ -319,6 +355,7 @@ class Continuous2DSearchEnv(BaseEnvironment):
         observations = self._build_observations()
         info = {
             "time": next_time,
+            "team_reward": team_reward,
             "step": self._step_count,
             "targets_total": len(self._targets),
             "targets_discovered": sum(target.discovered for target in self._targets),
@@ -563,13 +600,25 @@ class Continuous2DSearchEnv(BaseEnvironment):
                 dtype=np.float64,
             )
             neighbors: list[NeighborObservation] = []
-            for neighbor_node in self.topology.get_neighbors(node_id):
-                neighbor_id = node_to_agent.get(neighbor_node)
-                if neighbor_id is None:
-                    continue
-                neighbor = self._agents[neighbor_id]
-                relative_position = neighbor.state.position - agent.state.position
-                relative_velocity = neighbor.state.velocity - agent.state.velocity
+            if self.config.neighbor_observation_mode == "oracle":
+                snapshots = [
+                    (node_to_agent[node], self._state_payload(self._agents[node_to_agent[node]]), 0.0)
+                    for node in self.topology.get_neighbors(node_id)
+                    if node in node_to_agent
+                ]
+            else:
+                cache = self._neighbor_state_cache[agent_id]
+                for sender in tuple(cache):
+                    if cache[sender].is_expired(self.current_time):
+                        del cache[sender]
+                # 缓存只由成功投递的消息更新，不用真实邻接表或邻居实时状态补全。
+                snapshots = [
+                    (sender, message.payload, self.current_time - message.created_at)
+                    for sender, message in cache.items()
+                ]
+            for neighbor_id, state, age in snapshots:
+                relative_position = state[:2] - agent.state.position
+                relative_velocity = state[2:4] - agent.state.velocity
                 distance = float(np.linalg.norm(relative_position))
                 neighbors.append(
                     NeighborObservation(
@@ -580,13 +629,14 @@ class Continuous2DSearchEnv(BaseEnvironment):
                                 relative_position[1] / self.config.height,
                                 relative_velocity[0] / agent.attributes.max_speed,
                                 relative_velocity[1] / agent.attributes.max_speed,
-                                neighbor.state.energy,
+                                state[4],
                             ]
                         ),
                         link_weight=1.0 / (1.0 + distance),
                         metadata={
                             "distance": distance,
                             "relative_position": relative_position.copy(),
+                            "message_age": age,
                         },
                     )
                 )
@@ -611,9 +661,37 @@ class Continuous2DSearchEnv(BaseEnvironment):
                     "sensor_range": agent.attributes.sensor_range,
                     "all_targets_discovered": self.detection_ratio == 1.0,
                     "discoveries": agent.state.extras.get("discoveries", 0),
+                    "neighbor_observation_mode": self.config.neighbor_observation_mode,
                 },
             )
         return observations
+
+    @staticmethod
+    def _state_payload(agent: BaseAgent) -> np.ndarray:
+        """复制本机状态，噪声由通信总线施加，避免载荷引用随运动改变。"""
+
+        return np.concatenate((agent.state.position, agent.state.velocity, [agent.state.energy]))
+
+    def _broadcast_neighbor_states(self) -> None:
+        if self.config.neighbor_observation_mode != "communicated":
+            return
+        for agent_id, agent in self._agents.items():
+            if agent.state.active:
+                self.route_message(Message(
+                    sender=agent_id,
+                    receiver=None,
+                    payload=self._state_payload(agent),
+                    created_at=self.current_time,
+                    ttl=self.config.neighbor_state_ttl,
+                    metadata={"kind": "neighbor_state"},
+                ))
+
+    def _deliver_messages(self, timestamp: float) -> tuple[TransmissionResult, ...]:
+        receivers = {
+            agent_id: _StateMessageReceiver(agent, self._neighbor_state_cache[agent_id])
+            for agent_id, agent in self._agents.items()
+        }
+        return self.communication.advance_time(timestamp, receivers)
 
     def _detect_targets(self, timestamp: float) -> int:
         newly_discovered = 0
@@ -681,6 +759,7 @@ class Continuous2DSearchEnv(BaseEnvironment):
                     agent.state.active = False
                     self.topology.set_node_active(self._agent_nodes[agent_id], False)
                 self._fault_forced_offline.add(agent_id)
+                self._neighbor_state_cache[agent_id].clear()
             elif not fault_active and agent_id in self._fault_forced_offline:
                 self._fault_forced_offline.remove(agent_id)
                 if agent.state.energy > 0:

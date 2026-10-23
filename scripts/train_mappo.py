@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
@@ -19,16 +20,28 @@ from algorithms import SharedGraphActorCritic
 from core import AgentAttributes
 from environments import Continuous2DConfig, Continuous2DSearchEnv
 from evaluation.plotting import plot_training_metrics
+from interaction import CommunicationConfig
 from training import MAPPOConfig, MAPPOTrainer
 
 
 def build_environment(
-    model: SharedGraphActorCritic, agent_count: int, max_steps: int
+    model: SharedGraphActorCritic, agent_count: int, max_steps: int,
+    *,
+    communication_config: CommunicationConfig | None = None,
+    observation_mode: str = "communicated",
+    neighbor_state_ttl: float = 1.0,
+    link_fault: bool = True,
+    node_fault: bool = True,
 ) -> Continuous2DSearchEnv:
     """构造训练环境；所有智能体显式持有同一个策略对象。"""
 
     environment = Continuous2DSearchEnv(
-        Continuous2DConfig(max_steps=max_steps, n_targets=6)
+        Continuous2DConfig(
+            max_steps=max_steps, n_targets=6,
+            neighbor_observation_mode=observation_mode,
+            neighbor_state_ttl=neighbor_state_ttl,
+        ),
+        communication_config,
     )
     attributes = AgentAttributes(
         agent_type="uav",
@@ -41,9 +54,15 @@ def build_environment(
             SharedPolicyAgent(f"agent-{index}", model, attributes)
         )
     # 在训练中注入可恢复断链，使策略采样真实经历邻域缺失和拓扑切换。
-    if agent_count >= 2:
+    total_time = environment.config.dt * max_steps
+    fault_duration = max(environment.config.dt, total_time * 0.1)
+    if link_fault and agent_count >= 2:
         environment.schedule_link_fault(
-            "agent-0", "agent-1", start_time=4.0, duration=2.0
+            "agent-0", "agent-1", start_time=total_time * 0.25, duration=fault_duration
+        )
+    if node_fault and agent_count >= 2:
+        environment.schedule_node_fault(
+            f"agent-{agent_count - 1}", start_time=total_time * 0.55, duration=fault_duration
         )
     return environment
 
@@ -57,6 +76,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--aggregation", choices=("mean", "attention", "none"), default="attention")
+    parser.add_argument("--observation-mode", choices=("communicated", "oracle"), default="communicated")
+    parser.add_argument("--neighbor-state-ttl", type=float, default=1.0)
+    parser.add_argument("--packet-loss-rate", type=float, default=0.0)
+    parser.add_argument("--base-delay", type=float, default=0.0)
+    parser.add_argument("--delay-jitter", type=float, default=0.0)
+    parser.add_argument("--noise-std", type=float, default=0.0)
+    parser.add_argument("--link-fault", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--node-fault", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs")
     return parser.parse_args()
 
@@ -67,18 +95,37 @@ def main() -> None:
         raise ValueError("updates 和 agents 必须为正整数")
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    model = SharedGraphActorCritic(6, 5, 2, hidden_dim=args.hidden_dim)
-    environment = build_environment(model, args.agents, args.max_steps)
+    model = SharedGraphActorCritic(6, 5, 2, hidden_dim=args.hidden_dim, aggregation=args.aggregation)
+    environment = build_environment(
+        model, args.agents, args.max_steps,
+        communication_config=CommunicationConfig(
+            packet_loss_rate=args.packet_loss_rate, base_delay=args.base_delay,
+            delay_jitter=args.delay_jitter, noise_std=args.noise_std,
+        ),
+        observation_mode=args.observation_mode, neighbor_state_ttl=args.neighbor_state_ttl,
+        link_fault=args.link_fault, node_fault=args.node_fault,
+    )
     trainer = MAPPOTrainer(
         model,
         MAPPOConfig(
             rollout_steps=args.rollout_steps,
             update_epochs=args.update_epochs,
         ),
+        seed=args.seed,
     )
     history = trainer.train(environment, args.updates)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    run_config = {
+        "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
+        "model": model.architecture_config(),
+        "environment": asdict(environment.config),
+        "communication": asdict(environment.communication_config),
+        "training": asdict(trainer.config),
+    }
+    (args.output_dir / "run_config.json").write_text(
+        json.dumps(run_config, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     metrics_path = args.output_dir / "training_metrics.jsonl"
     with metrics_path.open("w", encoding="utf-8") as file:
         for metrics in history:

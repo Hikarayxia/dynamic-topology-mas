@@ -110,6 +110,26 @@ class CommunicationBusTests(unittest.TestCase):
         bus.advance_time(0.0, {"agent-b": receiver})
         self.assertEqual(receiver.messages[0].payload, "mapped")
 
+    def test_state_traffic_does_not_change_protocol_loss_delay_or_noise_samples(self) -> None:
+        config = CommunicationConfig(packet_loss_rate=0.3, base_delay=0.2, delay_jitter=0.1, noise_std=0.2)
+        plain = CommunicationBus(self.topology, config, seed=7)
+        with_states = CommunicationBus(self.topology, config, seed=7)
+        ordinary_results = [[], []]
+        ordinary_payloads = []
+        for index in range(20):
+            with_states.send(Message("A", "B", np.ones(5), 0, metadata={"kind": "neighbor_state"}))
+            for bus_index, bus in enumerate((plain, with_states)):
+                result = bus.send(Message("A", "B", np.ones(2), 0, metadata={"kind": "protocol"}))[0]
+                ordinary_results[bus_index].append((result.status, result.deliver_at))
+        for bus in (plain, with_states):
+            receiver = Receiver()
+            bus.advance_time(1, {"B": receiver})
+            ordinary_payloads.append([
+                message.payload for message in receiver.messages if message.metadata["kind"] == "protocol"
+            ])
+        self.assertEqual(ordinary_results[0], ordinary_results[1])
+        np.testing.assert_array_equal(ordinary_payloads[0], ordinary_payloads[1])
+
 
 if __name__ == "__main__":
     unittest.main()
