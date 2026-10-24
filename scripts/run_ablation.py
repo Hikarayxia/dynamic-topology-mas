@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def main() -> None:
@@ -32,6 +35,9 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs" / "ablation")
     parser.add_argument("--dry-run", action="store_true", help="只写入实验计划，不执行训练")
     args = parser.parse_args()
+    summary_dir = args.output_dir / "summary"
+    if summary_dir.exists():
+        parser.error(f"已有汇总目录，请更换 output-dir: {summary_dir}")
     aggregations = list(dict.fromkeys(value.strip() for value in args.aggregations.split(",")))
     seeds = list(dict.fromkeys(int(value.strip()) for value in args.seeds.split(",")))
     counts = [int(value.strip()) for value in args.agent_counts.split(",")]
@@ -77,8 +83,19 @@ def main() -> None:
         return
     for run in plan:
         print(f"开始 {run['aggregation']} / seed={run['seed']}", flush=True)
-        subprocess.run(run["train"], cwd=PROJECT_ROOT, check=True)
-        subprocess.run(run["evaluate"], cwd=PROJECT_ROOT, check=True)
+        # Windows 子进程可能采用不同的默认编码，统一 UTF-8 保证中文日志可读。
+        child_environment = {**os.environ, "PYTHONUTF8": "1"}
+        subprocess.run(run["train"], cwd=PROJECT_ROOT, check=True, env=child_environment)
+        subprocess.run(run["evaluate"], cwd=PROJECT_ROOT, check=True, env=child_environment)
+
+    from evaluation.ablation import save_ablation_report, summarize_ablation
+
+    report = summarize_ablation(args.output_dir)
+    paths = save_ablation_report(report, summary_dir)
+    for warning in report["warnings"]:
+        print(f"统计提示: {warning}", flush=True)
+    print(f"跨训练种子汇总表: {paths['csv']}", flush=True)
+    print(f"消融对比图: {paths['figure']}", flush=True)
 
 
 if __name__ == "__main__":

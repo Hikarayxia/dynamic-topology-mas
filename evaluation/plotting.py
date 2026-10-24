@@ -46,6 +46,69 @@ def plot_training_metrics(metrics_path: str | Path, output_path: str | Path) -> 
     return target
 
 
+def plot_ablation_summary(rows: Sequence[dict], output_path: str | Path) -> Path:
+    """按场景分面比较规模泛化；误差棒只使用可估计的训练种子样本标准差。
+
+    rows 为跨种子汇总行，返回 PNG 路径。缺失事件显示为空缺，单种子及去重后
+    的规则基线不画误差棒，避免把“无法估计”误画成确定的零波动。
+    """
+
+    if not rows:
+        raise ValueError("消融汇总不能为空")
+    scenarios = sorted({row["scenario"] for row in rows})
+    curves = sorted({(row["aggregation"], row["policy"]) for row in rows})
+    metrics = (("success_rate", "Success rate"),
+               ("mean_cumulative_reward", "Cumulative reward"),
+               ("mean_final_detection_ratio", "Final detection ratio"),
+               ("mean_recovery_time", "Recovery time (s)"))
+    colors = {"none": "tab:blue", "mean": "tab:orange", "attention": "tab:green",
+              "rule": "tab:gray", "replacement": "tab:purple"}
+    figure, axes = plt.subplots(len(scenarios), 4, squeeze=False,
+                                figsize=(16, max(3.8, len(scenarios) * 3.1)))
+    for row_index, scenario in enumerate(scenarios):
+        for axis, (metric, title) in zip(axes[row_index], metrics):
+            has_observation = False
+            for aggregation, policy in curves:
+                points = sorted((row for row in rows if row["scenario"] == scenario
+                                 and row["aggregation"] == aggregation and row["policy"] == policy),
+                                key=lambda row: row["agent_count"])
+                if not points:
+                    continue
+                label = (f"{aggregation} (seeds={points[0]['training_seed_count']})"
+                         if policy == "learned" else f"{policy} (fixed)")
+                color = colors[aggregation if policy == "learned" else policy]
+                x = [point["agent_count"] for point in points]
+                values = [point["metrics"][metric]["mean"] for point in points]
+                axis.plot(x, [float("nan") if value is None else value for value in values],
+                          marker="o", label=label, color=color,
+                          linestyle="-" if policy == "learned" else "--")
+                observed = [point for point in points if point["metrics"][metric]["mean"] is not None]
+                has_observation |= bool(observed)
+                uncertain = [point for point in observed if point["metrics"][metric]["std"] is not None]
+                if uncertain:
+                    axis.errorbar([point["agent_count"] for point in uncertain],
+                                  [point["metrics"][metric]["mean"] for point in uncertain],
+                                  yerr=[point["metrics"][metric]["std"] for point in uncertain],
+                                  fmt="none", capsize=3, color=color)
+            axis.set_title(f"{scenario}\n{title}", fontsize=10)
+            axis.set_xlabel("Agents")
+            axis.set_xticks(sorted({row["agent_count"] for row in rows if row["scenario"] == scenario}))
+            axis.grid(alpha=0.25)
+            if not has_observation:
+                axis.text(0.5, 0.5, "No observed event", transform=axis.transAxes, ha="center")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.03), ncol=len(curves))
+    figure.suptitle("Ablation comparison across independent training seeds")
+    figure.text(0.5, 0.01, "Error bars: sample SD; omitted for <2 valid seeds. Rule baselines deduplicated.",
+                ha="center", fontsize=9)
+    figure.tight_layout(rect=(0, 0.11 if len(scenarios) == 1 else 0.07, 1, 0.95))
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(target, dpi=160)
+    plt.close(figure)
+    return target
+
+
 def plot_evaluation_summary(
     summaries: Sequence[ScenarioSummary], output_path: str | Path
 ) -> Path:

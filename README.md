@@ -141,6 +141,39 @@ python scripts/run_ablation.py --output-dir outputs/ablation_v1
 训练种子默认 0、1、2，测试种子从 10000 开始，所有策略使用配对测试种子。
 `none` 是本框架的无邻居消融，不代表完整复现某个外部标准 MAPPO 实现。
 
+### 多种子结果汇总
+
+完整实验矩阵运行结束后，`run_ablation.py` 自动在实验目录的 `summary/` 下保存：
+
+- `ablation_summary.csv`：按聚合器、策略、场景和规模分组的均值、样本标准差及有效样本数；
+- `ablation_summary.json`：相同统计量，以及来源目录、训练配置、测试配置和统计提示；
+- `ablation_comparison.png`：成功率、累计奖励、最终目标发现比例、故障恢复时间对比图。
+
+也可以对已有完整实验单独汇总，无需重新训练：
+
+```powershell
+python scripts/summarize_ablation.py --input-dir outputs/ablation_v1
+```
+
+如已有汇总，使用新目录保存复核结果，避免覆盖先前记录：
+
+```powershell
+python scripts/summarize_ablation.py --input-dir outputs/ablation_v1 --output-dir outputs/ablation_v1/summary_review
+```
+
+统计时先在每个训练种子内部汇总评估回合，再对独立训练种子的结果等权计算
+均值和样本标准差（分母为有效种子数减一），不把多个评估回合当作多个训练种子。
+仅一个有效种子时标准差为空，图中不画误差棒；未发生恢复等事件的指标保持为空，
+CSV 的 `_count` 和 JSON 的 `count` 记录该指标的有效样本数。恢复时间等条件均值
+应结合恢复率一起解读，不能将未恢复回合计成零秒。
+
+规则基线不依赖模型训练种子。同一配对测试任务下的重复基线先核对结果一致，
+再去重为一份；其 `training_seed_count` 为 0，`replicate_count` 为 1，不估计
+跨训练种子的标准差。缺失训练组、重复回合、测试种子错配、实际训练预算不足、
+不一致配置或非有限指标都会导致汇总失败，不生成不完整的比较结果。
+输入必须包含原实验计划、每组训练配置与训练日志、评估场景配置及逐回合指标；
+只生成计划的 `--dry-run` 目录不能当作已经完成的实验汇总。
+
 ## 运行弹性与规模泛化评估
 
 评估规则基线和协作补位策略：
