@@ -112,6 +112,8 @@ python scripts/train_mappo.py --updates 100 --rollout-steps 256 --update-epochs 
   数值快照，通过通信总线后才进入接收方缓存；未收到状态包就没有对应邻居特征。
 - `--neighbor-state-ttl 1.0`：缓存最多保留 1 秒；失联后保留未过期快照，
   不读取真实拓扑来提前判定邻居失效。延迟超过 TTL 的包不进入观测，旧包不能覆盖新包。
+  直接移除节点也不会清空其他接收方的有效快照，缓存仍从消息生成时刻计时；
+  该接口不模拟成功送达的退出通知。`oracle` 对照模式仍立即反映节点移除。
 - `--observation-mode oracle`：显式恢复旧版实时真值邻居输入，仅用于理想信息
   对照和旧实验复现。该模式下丢包和时延不会改变邻居特征，不能证明通信鲁棒性。
 - `--aggregation mean|attention|none`：距离加权均值、可学习注意力、无邻居输入。

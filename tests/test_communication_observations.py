@@ -87,6 +87,47 @@ class CommunicationObservationTests(unittest.TestCase):
         self._step(env)
         self.assertEqual(self._step(env).observations["A"].neighbors, ())
 
+    def test_removed_neighbor_keeps_received_snapshot_until_ttl_expires(self):
+        """物理移除不能代替失效通知，接收方只能依靠消息年龄淘汰快照。"""
+
+        env = self._environment(ttl=0.5)
+        before = env.reset(seed=7)["A"].neighbors[0].features.copy()
+        removed = env.remove_agent("B")
+        self.assertNotIn("B", env.agents)
+        self.assertFalse(env.topology.has_node("B"))
+        # 被移除对象后续的变化不能修改接收方已经收到的状态。
+        removed.state.position[:] = (0, 0)
+        immediate = env._build_observations()["A"].neighbors
+        self.assertEqual(tuple(neighbor.neighbor_id for neighbor in immediate), ("B",))
+        np.testing.assert_array_equal(immediate[0].features, before)
+        for expected_age in (0.25, 0.5):
+            neighbor = self._step(env).observations["A"].neighbors[0]
+            np.testing.assert_array_equal(neighbor.features, before)
+            self.assertAlmostEqual(neighbor.metadata["message_age"], expected_age)
+        self.assertEqual(self._step(env).observations["A"].neighbors, ())
+
+    def test_removed_sender_cannot_refresh_cache_with_in_flight_state(self):
+        """只保留已投递快照，移除前在途的状态包仍须通过链路校验。"""
+
+        env = self._environment(ttl=0.5, base_delay=0.25)
+        env.reset(seed=7)
+        self.assertEqual(len(self._step(env).observations["A"].neighbors), 1)
+        env.remove_agent("B")
+        neighbors = self._step(env).observations["A"].neighbors
+        self.assertEqual(len(neighbors), 1)
+        neighbor = neighbors[0]
+        self.assertEqual(neighbor.neighbor_id, "B")
+        self.assertAlmostEqual(neighbor.metadata["message_age"], 0.5)
+        self.assertEqual(self._step(env).observations["A"].neighbors, ())
+
+    def test_oracle_observation_removes_deleted_neighbor_immediately(self):
+        """真值对照仍应反映实时拓扑，不能被通信缓存修复改变语义。"""
+
+        env = self._environment(mode="oracle")
+        self.assertEqual(len(env.reset(seed=7)["A"].neighbors), 1)
+        env.remove_agent("B")
+        self.assertEqual(self._step(env).observations["A"].neighbors, ())
+
     def test_message_expiring_in_transit_never_enters_observation(self):
         env = self._environment(ttl=0.25, base_delay=0.5)
         env.reset(seed=7)

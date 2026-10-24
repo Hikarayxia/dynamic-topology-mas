@@ -223,12 +223,15 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._neighbor_state_cache[agent.id] = {}
 
     def remove_agent(self, agent_id: Hashable) -> BaseAgent:
-        """移除智能体并清理通信端点。"""
+        """移除指定智能体及其通信端点，返回被移除对象。
+
+        其他接收方已经收到的状态仍由消息 TTL 管理；移除物理节点本身并不等于
+        成功广播了退出通知，不能借此提前告知策略邻居失效。
+        """
 
         self.communication.unregister_endpoint(agent_id)
         self._neighbor_state_cache.pop(agent_id, None)
-        for cache in self._neighbor_state_cache.values():
-            cache.pop(agent_id, None)
+        # 只清理离开者自己的接收缓存，其他节点保留最后收到的快照直到自然过期。
         return super().remove_agent(agent_id)
 
     def schedule_link_fault(
