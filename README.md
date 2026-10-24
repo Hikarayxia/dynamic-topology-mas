@@ -291,3 +291,18 @@ python scripts/analyze_training_pilot.py --input-dir outputs/training_pilot_2026
 评估必须由新版入口在执行时生成 `evaluation_provenance.json`，将模型指纹与
 原始结果关联；缺失清单的旧结果不会被事后补标。本分析入口保守拒绝无法核验
 终止原因的提前失败回合，原通用评估入口的故障终止行为保持不变。
+
+### 可选稳健价值损失
+
+训练入口和多种子入口支持 `--value-loss-type mse|huber`，默认 `mse` 保持原行为。
+Huber 使用固定 delta=1，限制大价值误差的梯度；不改变团队奖励，也不是避碰
+控制器或安全保证。实际类型记录在配置与检查点中，续训拒绝静默切换损失函数。
+
+```powershell
+python scripts/train_mappo.py --updates 100 --rollout-steps 256 --agents 4 --max-steps 300 --aggregation attention --value-loss-type huber --output-dir outputs/huber_trial/training
+```
+
+单种子、同预算及新配对种子的真实对照中，Huber 减少了碰撞并提高累计奖励，
+但任务成功率仍为 0；不能据此声称算法已收敛或完成协作搜索。协议、结果、
+兼容性说明与复现命令见
+[`docs/training_stability_2026-10-24.md`](docs/training_stability_2026-10-24.md)。

@@ -29,6 +29,7 @@ class MAPPOConfig:
     value_coef: float = 0.5
     entropy_coef: float = 0.01
     max_grad_norm: float = 0.5
+    value_loss_type: str = "mse"
 
     def __post_init__(self) -> None:
         if self.rollout_steps <= 0 or self.update_epochs <= 0:
@@ -41,6 +42,8 @@ class MAPPOConfig:
             raise ValueError("clip_ratio 必须为正数")
         if self.value_coef < 0 or self.entropy_coef < 0:
             raise ValueError("value_coef 和 entropy_coef 不能为负数")
+        if self.value_loss_type not in {"mse", "huber"}:
+            raise ValueError("value_loss_type 必须为 mse 或 huber")
 
 
 @dataclass
@@ -181,6 +184,18 @@ class MAPPOTrainer:
             )
         return advantage_tensor, torch.as_tensor(returns, device=self.device)
 
+    def value_loss(self, predictions: Tensor, returns: Tensor) -> Tensor:
+        """按配置计算平均价值损失，不改变回报目标或团队奖励。
+
+        参数为同形状的 Critic 预测与 GAE 回报，返回标量损失。保留原 MSE 为默认，
+        Huber(delta=1) 的大误差梯度有界，用于检验价值误差经共享编码器影响 Actor
+        的风险；它不等同于避碰控制器，也不保证训练稳定或任务成功。
+        """
+
+        if self.config.value_loss_type == "huber":
+            return torch.nn.functional.smooth_l1_loss(predictions, returns, beta=1.0)
+        return torch.nn.functional.mse_loss(predictions, returns)
+
     def update(self, rollout: Sequence[RolloutStep]) -> dict[str, float]:
         """执行多轮 PPO 裁剪更新并返回实际损失均值。"""
 
@@ -206,9 +221,7 @@ class MAPPOTrainer:
 
             actor_loss = torch.cat(actor_terms).mean()
             entropy_mean = torch.cat(entropy_terms).mean()
-            value_loss = torch.nn.functional.mse_loss(
-                torch.stack(value_predictions), returns
-            )
+            value_loss = self.value_loss(torch.stack(value_predictions), returns)
             total_loss = (
                 actor_loss
                 + self.config.value_coef * value_loss
@@ -272,6 +285,10 @@ class MAPPOTrainer:
         """恢复模型、优化器和累计环境步数，用于继续同配置训练。"""
 
         checkpoint = torch.load(Path(path), map_location=self.device, weights_only=False)
+        # 损失函数也是训练协议的一部分；不能恢复权重后悄悄切换优化目标。
+        # 旧检查点没有该字段，按历史实现解释为 MSE，继续保持兼容。
+        if checkpoint.get("config", {}).get("value_loss_type", "mse") != self.config.value_loss_type:
+            raise ValueError("检查点价值损失与当前配置不同，请显式使用同一 value_loss_type")
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.environment_steps = int(checkpoint.get("environment_steps", 0))

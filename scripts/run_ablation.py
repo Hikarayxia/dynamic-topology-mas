@@ -208,6 +208,7 @@ def main() -> None:
     parser.add_argument("--updates", type=int, default=100)
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--update-epochs", type=int, default=4)
+    parser.add_argument("--value-loss-type", choices=("mse", "huber"), default="mse")
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--episodes", type=int, default=20)
@@ -248,6 +249,9 @@ def main() -> None:
                 "--max-steps", str(args.max_steps), "--hidden-dim", str(args.hidden_dim),
                 "--output-dir", str(train_dir), *communication,
             ]
+            # 默认 MSE 不添加新参数，使没有该选项的历史计划仍可原样续跑。
+            if args.value_loss_type != "mse":
+                train.extend(["--value-loss-type", args.value_loss_type])
             evaluate = [
                 sys.executable, str(PROJECT_ROOT / "scripts" / "evaluate_policies.py"),
                 "--checkpoint", str(train_dir / "mappo_checkpoint.pt"),

@@ -131,6 +131,21 @@ class AblationReportingTests(unittest.TestCase):
         self.assertEqual(learned["metrics"]["success_rate"], dict(mean=0.5, std=0.5, count=3))
         self.assertEqual(learned["training_seed_count"], 3)
 
+    def test_old_and_new_default_mse_runs_can_be_summarized_together(self):
+        self._fixture(seeds=(0, 1))
+        self._edit_json("mean/seed_0/training/run_config.json",
+                        lambda value: value["training"].pop("value_loss_type", None))
+        self._edit_json("mean/seed_1/training/run_config.json",
+                        lambda value: value["arguments"].update(value_loss_type="mse"))
+        # 中断矩阵仅重跑一组时，缺省的旧 MSE 与显式的新 MSE 是同一协议。
+        try:
+            report = self._report()
+        except ValueError as error:
+            self.fail(f"同一 MSE 协议不应因新旧字段差异被拒绝: {error}")
+        self.assertEqual(report["completed_runs"], 2)
+        learned = next(row for row in report["rows"] if row["policy"] == "learned")
+        self.assertEqual(learned["training_seed_count"], 2)
+
     def test_missing_events_and_single_seed_do_not_become_zero_variance(self):
         self._fixture(seeds=(0,))
         report = self._report()

@@ -72,6 +72,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--updates", type=int, default=10)
     parser.add_argument("--rollout-steps", type=int, default=128)
     parser.add_argument("--update-epochs", type=int, default=4)
+    parser.add_argument("--value-loss-type", choices=("mse", "huber"), default="mse",
+                        help="价值损失；mse 保持原行为，huber 用于大价值误差的稳健化对照")
     parser.add_argument("--agents", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--hidden-dim", type=int, default=64)
@@ -110,6 +112,7 @@ def main() -> None:
         MAPPOConfig(
             rollout_steps=args.rollout_steps,
             update_epochs=args.update_epochs,
+            value_loss_type=args.value_loss_type,
         ),
         seed=args.seed,
     )

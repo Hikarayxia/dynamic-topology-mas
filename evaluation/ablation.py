@@ -135,6 +135,10 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
     if any(config["training"].get(key) != arguments.get(key)
            for key in ("rollout_steps", "update_epochs")):
         raise ValueError(f"优化器配置与训练参数不一致: {run}")
+    # 缺失字段按历史 MSE 解释；显式的新损失必须与实际优化配置一致。
+    loss_type = config["training"].get("value_loss_type", "mse")
+    if loss_type not in {"mse", "huber"} or loss_type != arguments.get("value_loss_type", "mse"):
+        raise ValueError(f"价值损失配置与训练参数不一致: {run}")
     metrics = _read_json(run / "training/training_metrics.jsonl", lines=True)
     if len(metrics) != updates:
         raise ValueError(f"训练日志更新次数不完整: {run}")
@@ -149,8 +153,11 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
     # 种子、聚合器、输出路径是组间允许的差异，其余实际配置必须完全一致。
     return {
         **config,
-        "arguments": {key: value for key, value in arguments.items()
-                      if key not in {"seed", "aggregation", "output_dir"}},
+        # 签名也规范化历史缺省值，才能让旧完成组与新版 MSE 重跑组共同汇总。
+        "arguments": {**{key: value for key, value in arguments.items()
+                         if key not in {"seed", "aggregation", "output_dir"}},
+                      "value_loss_type": loss_type},
+        "training": {**config["training"], "value_loss_type": loss_type},
         "model": {key: value for key, value in config["model"].items() if key != "aggregation"},
     }
 
