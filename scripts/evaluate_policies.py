@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, replace
+import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import sys
@@ -105,8 +107,13 @@ def _scenarios(args: argparse.Namespace) -> list[ExperimentScenario]:
     ) for scenario in scenarios]
 
 
-def _load_model(checkpoint: Path, hidden_dim: int) -> SharedGraphActorCritic:
-    data = torch.load(checkpoint, map_location="cpu", weights_only=False)
+def _load_model(
+    checkpoint: Path, hidden_dim: int, *, checkpoint_bytes: bytes | None = None,
+) -> SharedGraphActorCritic:
+    """从检查点重建推理模型；可传入已读取字节，使加载内容与来源指纹严格一致。"""
+
+    source = BytesIO(checkpoint_bytes) if checkpoint_bytes is not None else checkpoint
+    data = torch.load(source, map_location="cpu", weights_only=False)
     config = data.get(
         "model_config",
         {
@@ -127,7 +134,10 @@ def main() -> None:
     args = parse_args()
     if args.episodes <= 0 or args.max_steps <= 0:
         raise ValueError("episodes 和 max-steps 必须为正整数")
-    model = _load_model(args.checkpoint, args.hidden_dim) if args.checkpoint else None
+    # 同一份不可变字节既用于加载又用于算指纹，避免文件被并发替换后来源误标。
+    checkpoint_bytes = args.checkpoint.read_bytes() if args.checkpoint else None
+    model = (_load_model(args.checkpoint, args.hidden_dim, checkpoint_bytes=checkpoint_bytes)
+             if args.checkpoint else None)
     # 规则基线与协作补位策略始终使用相同场景比较；只有显式提供检查点时才加入
     # 学习策略，避免未训练模型被误当成有效实验组。
     policies = ["rule", "replacement"]
@@ -157,6 +167,18 @@ def main() -> None:
 
     summaries = compare_with_nominal(summaries)
     paths = save_evaluation_results(args.output_dir, all_episodes, summaries)
+    provenance = dict(
+        schema_version=1,
+        checkpoint_sha256=(hashlib.sha256(checkpoint_bytes).hexdigest()
+                           if checkpoint_bytes is not None else None),
+        model_config=model.architecture_config() if model is not None else None,
+        deterministic=True,
+        result_sha256={name: hashlib.sha256((args.output_dir / name).read_bytes()).hexdigest()
+                       for name in ("scenario_config.json", "episode_metrics.jsonl")},
+    )
+    # 只在实际评估完成后记录来源。该清单检测误配与意外改动，不是防恶意篡改签名。
+    (args.output_dir / "evaluation_provenance.json").write_text(
+        json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
     figure = plot_evaluation_summary(summaries, args.output_dir / "evaluation_summary.png")
     replacement_figure = plot_replacement_summary(
         summaries, args.output_dir / "replacement_summary.png"

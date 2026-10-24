@@ -270,3 +270,24 @@ python scripts/evaluate_policies.py --episodes 20 --agent-counts 5,10,20,50 --ch
 
 2026 年 10 月 24 日的多种子汇总、安全续跑及真实验证记录见
 [`docs/progress_2026-10-24.md`](docs/progress_2026-10-24.md)。
+
+### 单种子试训与独立配对评估
+
+25,600 步的单种子试训已完成；独立测试没有得到成功协作策略，并出现贴边聚集
+和碰撞增加。完整协议、真实结果、限制及复现命令见
+[`docs/training_pilot_2026-10-24.md`](docs/training_pilot_2026-10-24.md)。
+这不是已收敛的模型，也不作为跨规模泛化或聚合器优势的证据。
+
+已保存初始模型、训练产物及前后独立评估后，可以只读生成配对分析：
+
+```powershell
+python scripts/analyze_training_pilot.py --input-dir outputs/training_pilot_20261024 --initial-evaluation outputs/training_pilot_20261024/evaluation_initial_verified --final-evaluation outputs/training_pilot_20261024/evaluation_final_verified --output-dir outputs/training_pilot_20261024/analysis_review
+```
+
+输入结构为 `initial/`、`training/`、`evaluation_initial/`、`evaluation_final/`。
+分析前会核对训练预算、检查点、测试场景、种子独立性和回合完整性；规则基线
+逐回合核对一致后去重。输出包含 JSON、配对差值 CSV 和对比图，目标目录必须
+不存在，不覆盖原始实验。只有一个训练种子，不估计跨训练种子方差或显著性。
+评估必须由新版入口在执行时生成 `evaluation_provenance.json`，将模型指纹与
+原始结果关联；缺失清单的旧结果不会被事后补标。本分析入口保守拒绝无法核验
+终止原因的提前失败回合，原通用评估入口的故障终止行为保持不变。
