@@ -308,6 +308,19 @@ def summarize_ablation(input_dir: str | Path) -> dict[str, Any]:
     )
 
 
+def _csv_rows(summaries: list[dict]) -> list[dict]:
+    """统一 CSV 展平规则，让保存与续跑核验使用同一输出协议。"""
+
+    rows = []
+    for row in summaries:
+        flat = {key: value for key, value in row.items() if key != "metrics"}
+        flat["training_seeds"] = json.dumps(flat["training_seeds"])
+        for name, statistics in row["metrics"].items():
+            flat.update({f"{name}_{key}": value for key, value in statistics.items()})
+        rows.append(flat)
+    return rows
+
+
 def save_ablation_report(report: dict[str, Any], output_dir: str | Path) -> dict[str, Path]:
     """将汇总保存到新目录，返回 JSON/CSV/PNG 路径；已有目录一律拒绝覆盖。"""
 
@@ -321,13 +334,7 @@ def save_ablation_report(report: dict[str, Any], output_dir: str | Path) -> dict
     paths["json"].write_text(
         json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
     )
-    rows = []
-    for row in report["rows"]:
-        flat = {key: value for key, value in row.items() if key != "metrics"}
-        flat["training_seeds"] = json.dumps(flat["training_seeds"])
-        for name, statistics in row["metrics"].items():
-            flat.update({f"{name}_{key}": value for key, value in statistics.items()})
-        rows.append(flat)
+    rows = _csv_rows(report["rows"])
     with paths["csv"].open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
