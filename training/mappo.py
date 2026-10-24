@@ -88,6 +88,7 @@ class MAPPOTrainer:
         config: MAPPOConfig | None = None,
         *,
         device: str | torch.device = "cpu",
+        seed: int = 0,
     ) -> None:
         self.config = config or MAPPOConfig()
         self.device = torch.device(device)
@@ -97,7 +98,7 @@ class MAPPOTrainer:
         )
         self.environment_steps = 0
         self._observations: Mapping[Hashable, Observation] | None = None
-        self._next_reset_seed = 0
+        self._next_reset_seed = seed
 
     def collect_rollout(
         self, environment: Continuous2DSearchEnv
@@ -130,7 +131,7 @@ class MAPPOTrainer:
                 for index, agent_id in enumerate(agent_ids)
             }
             result = environment.step(action_map)
-            team_reward = float(np.mean([result.rewards[key] for key in agent_ids]))
+            team_reward = float(result.info["team_reward"])
             done = bool(result.info["success"] or result.info["truncated"])
             rollout.append(
                 RolloutStep(
@@ -261,6 +262,7 @@ class MAPPOTrainer:
                 "optimizer": self.optimizer.state_dict(),
                 "config": asdict(self.config),
                 "environment_steps": self.environment_steps,
+                "next_reset_seed": self._next_reset_seed,
             },
             target,
         )
@@ -273,3 +275,5 @@ class MAPPOTrainer:
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.environment_steps = int(checkpoint.get("environment_steps", 0))
+        self._next_reset_seed = int(checkpoint.get("next_reset_seed", self._next_reset_seed))
+        self._observations = None

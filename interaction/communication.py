@@ -119,6 +119,8 @@ class CommunicationBus:
         self.config = config or CommunicationConfig()
         self.stats = CommunicationStats()
         self._rng = np.random.default_rng(seed)
+        # 状态广播使用独立随机流，增减观测流量不改变既有 gossip 的扰动样本。
+        self._state_rng = np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(1,)))
         self._queue: list[_QueuedMessage] = []
         self._sequence = 0
         self._time = topology.current_time
@@ -309,7 +311,8 @@ class CommunicationBus:
                 now,
                 "expired",
             )
-        if self._rng.random() < self.config.packet_loss_rate:
+        rng = self._state_rng if original.metadata.get("kind") == "neighbor_state" else self._rng
+        if rng.random() < self.config.packet_loss_rate:
             self.stats.dropped += 1
             return self._result(
                 original,
@@ -320,7 +323,7 @@ class CommunicationBus:
             )
 
         jitter = (
-            self._rng.uniform(-self.config.delay_jitter, self.config.delay_jitter)
+            rng.uniform(-self.config.delay_jitter, self.config.delay_jitter)
             if self.config.delay_jitter
             else 0.0
         )
@@ -328,7 +331,7 @@ class CommunicationBus:
         message = replace(
             original,
             receiver=target_endpoint,
-            payload=self._apply_noise(original.payload),
+            payload=self._apply_noise(original.payload, rng),
         )
         self._sequence += 1
         heapq.heappush(
@@ -368,14 +371,14 @@ class CommunicationBus:
             sender_node, receiver_node, active_only=True
         )
 
-    def _apply_noise(self, payload: Any) -> Any:
+    def _apply_noise(self, payload: Any, rng: np.random.Generator) -> Any:
         if self.config.noise_std == 0:
             return payload
         if isinstance(payload, np.ndarray) and np.issubdtype(payload.dtype, np.number):
-            noise = self._rng.normal(0.0, self.config.noise_std, payload.shape)
+            noise = rng.normal(0.0, self.config.noise_std, payload.shape)
             return payload.astype(np.float64, copy=True) + noise
         if isinstance(payload, (int, float, np.number)) and not isinstance(payload, bool):
-            return float(payload) + float(self._rng.normal(0.0, self.config.noise_std))
+            return float(payload) + float(rng.normal(0.0, self.config.noise_std))
         # 非数值载荷无法定义高斯噪声，保持原值并让上层自行编码。
         return payload
 

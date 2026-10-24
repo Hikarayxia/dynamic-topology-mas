@@ -1,6 +1,6 @@
 # 智能体架构设计文档
 
-> 文档状态：2026-09-01 更新。本文件同时记录目标架构与当前实现；目录树中标注
+> 文档状态：2026-10-23 更新。本文件同时记录目标架构与当前实现；目录树中标注
 > “已实现”的文件已经存在，其余条目仍是后续规划，不能作为现成功能使用。
 
 ## 0. 当前实现状态
@@ -47,9 +47,11 @@ Graph-MAPPO 训练链路，实际可运行结构如下：
 ├── tests/
 │   ├── __init__.py
 │   ├── test_communication.py
+│   ├── test_communication_observations.py
 │   ├── test_continuous_2d.py
 │   ├── test_core_models.py
 │   ├── test_evaluation.py
+│   ├── test_experiment_configuration.py
 │   ├── test_learning.py
 │   ├── test_replacement_agent.py
 │   ├── test_replacement_coordination.py
@@ -62,6 +64,7 @@ Graph-MAPPO 训练链路，实际可运行结构如下：
 │   ├── run_simulation.py            # 规则策略快速仿真
 │   ├── run_replacement_demo.py       # 协作补位与丢包快速演示
 │   ├── train_mappo.py               # Graph-MAPPO 训练入口
+│   ├── run_ablation.py              # 多种聚合器、多种子独立实验矩阵
 │   └── evaluate_policies.py          # 弹性与规模泛化评估
 ├── docs/
 │   └── architecture.md              # 本架构文档
@@ -87,8 +90,13 @@ Graph-MAPPO 训练链路，实际可运行结构如下：
 与连通性指标、链路/节点故障和通信投递。`RuleBasedSearchAgent` 使用分带往返
 扫描和邻居排斥，可作为学习策略的非学习基线。
 
-`GraphObservationEncoder` 对当前邻居消息执行共享映射和加权均值聚合，不依赖
-邻居顺序和固定节点数；`SharedGraphActorCritic` 为所有智能体共享 Actor，并由
+邻域观测默认来自通信总线成功投递的数值状态包，支持时延、丢包、噪声、TTL 和
+乱序保护。断链后缓存保留到过期，不借助全局真实状态立即删除邻居；`oracle`
+模式保留旧版实时真值输入作为显式对照。任务完成比例仍是全队共享信息。
+
+`GraphObservationEncoder` 对邻居快照执行共享映射，支持距离加权均值、使用
+消息年龄和距离权重的可学习注意力、无邻居三种模式，不依赖邻居顺序和固定
+节点数；`SharedGraphActorCritic` 为所有智能体共享 Actor，并由
 集中式 Critic 池化当时全部在线智能体表示。`MAPPOTrainer` 已实现动态规模轨迹
 采样、GAE、PPO 裁剪更新和检查点保存。当前仍需执行足够长的正式训练、增加
 重复实验与统计置信区间，不能把最小训练验证视为研究结果。

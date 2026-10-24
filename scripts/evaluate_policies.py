@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, replace
+import json
 from pathlib import Path
 import sys
 
@@ -23,6 +25,7 @@ from evaluation.evaluator import (
 )
 from evaluation.plotting import plot_evaluation_summary, plot_replacement_summary
 from evaluation.reporting import save_evaluation_results
+from interaction import CommunicationConfig
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +36,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--hidden-dim", type=int, default=64)
+    parser.add_argument("--observation-mode", choices=("communicated", "oracle"), default="communicated")
+    parser.add_argument("--neighbor-state-ttl", type=float, default=1.0)
+    parser.add_argument("--packet-loss-rate", type=float, default=0.0)
+    parser.add_argument("--base-delay", type=float, default=0.0)
+    parser.add_argument("--delay-jitter", type=float, default=0.0)
+    parser.add_argument("--noise-std", type=float, default=0.0)
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs" / "evaluation")
     return parser.parse_args()
 
@@ -79,7 +88,21 @@ def _scenarios(args: argparse.Namespace) -> list[ExperimentScenario]:
                 node_faults=node_faults,
             )
         )
-    return scenarios
+        if any((args.packet_loss_rate, args.base_delay, args.delay_jitter, args.noise_std)):
+            scenarios.append(ExperimentScenario(
+                name="communication_fault",
+                agent_count=count, episodes=args.episodes, base_seed=args.seed,
+                max_steps=args.max_steps,
+                communication_config=CommunicationConfig(
+                    packet_loss_rate=args.packet_loss_rate, base_delay=args.base_delay,
+                    delay_jitter=args.delay_jitter, noise_std=args.noise_std,
+                ),
+            ))
+    # nominal 始终是理想通信；拓扑故障组与通信故障组分开，便于归因。
+    return [replace(
+        scenario, neighbor_observation_mode=args.observation_mode,
+        neighbor_state_ttl=args.neighbor_state_ttl,
+    ) for scenario in scenarios]
 
 
 def _load_model(checkpoint: Path, hidden_dim: int) -> SharedGraphActorCritic:
@@ -112,7 +135,13 @@ def main() -> None:
         policies.append("learned")
     all_episodes = []
     summaries = []
-    for scenario in _scenarios(args):
+    scenarios = _scenarios(args)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / "scenario_config.json").write_text(
+        json.dumps([asdict(scenario) for scenario in scenarios], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    for scenario in scenarios:
         for policy in policies:
             episodes = evaluate_scenario(scenario, policy=policy, model=model)
             all_episodes.extend(episodes)

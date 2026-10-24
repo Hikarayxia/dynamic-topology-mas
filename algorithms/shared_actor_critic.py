@@ -28,13 +28,14 @@ class SharedGraphActorCritic(nn.Module):
         task_dim: int,
         action_dim: int = 2,
         hidden_dim: int = 64,
+        aggregation: str = "mean",
     ) -> None:
         super().__init__()
         if action_dim <= 0:
             raise ValueError("action_dim 必须为正整数")
         self.action_dim = action_dim
         self.encoder = GraphObservationEncoder(
-            self_dim, neighbor_dim, task_dim, hidden_dim
+            self_dim, neighbor_dim, task_dim, hidden_dim, aggregation
         )
         self.actor_mean = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim), nn.Tanh(), nn.Linear(hidden_dim, action_dim)
@@ -50,7 +51,7 @@ class SharedGraphActorCritic(nn.Module):
 
         return next(self.parameters()).device
 
-    def architecture_config(self) -> dict[str, int]:
+    def architecture_config(self) -> dict[str, int | str]:
         """返回重建模型所需维度，随检查点保存以避免评估配置错配。"""
 
         return {
@@ -59,6 +60,7 @@ class SharedGraphActorCritic(nn.Module):
             "task_dim": self.encoder.task_dim,
             "action_dim": self.action_dim,
             "hidden_dim": self.encoder.hidden_dim,
+            "aggregation": self.encoder.aggregation,
         }
 
     def encode(self, observations: Sequence[Observation]) -> Tensor:
