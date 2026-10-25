@@ -75,6 +75,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--value-loss-type", choices=("mse", "huber"), default="mse",
                         help="价值损失；mse 保持原行为，huber 用于大价值误差的稳健化对照")
     parser.add_argument("--agents", type=int, default=4)
+    parser.add_argument("--critic-encoder-mode", choices=("shared", "detached"), default="shared",
+                        help="价值损失是否更新共享编码器；detached 用于梯度干扰消融")
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
@@ -113,6 +115,7 @@ def main() -> None:
             rollout_steps=args.rollout_steps,
             update_epochs=args.update_epochs,
             value_loss_type=args.value_loss_type,
+            critic_encoder_mode=args.critic_encoder_mode,
         ),
         seed=args.seed,
     )

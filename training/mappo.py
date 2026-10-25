@@ -30,6 +30,7 @@ class MAPPOConfig:
     entropy_coef: float = 0.01
     max_grad_norm: float = 0.5
     value_loss_type: str = "mse"
+    critic_encoder_mode: str = "shared"
 
     def __post_init__(self) -> None:
         if self.rollout_steps <= 0 or self.update_epochs <= 0:
@@ -44,6 +45,8 @@ class MAPPOConfig:
             raise ValueError("value_coef 和 entropy_coef 不能为负数")
         if self.value_loss_type not in {"mse", "huber"}:
             raise ValueError("value_loss_type 必须为 mse 或 huber")
+        if self.critic_encoder_mode not in {"shared", "detached"}:
+            raise ValueError("critic_encoder_mode 必须为 shared 或 detached")
 
 
 @dataclass
@@ -207,7 +210,8 @@ class MAPPOTrainer:
             value_predictions: list[Tensor] = []
             for index, step in enumerate(rollout):
                 new_log_probs, entropy, value = self.model.evaluate_actions(
-                    step.observations, step.actions
+                    step.observations, step.actions,
+                    detach_critic_encoder=self.config.critic_encoder_mode == "detached",
                 )
                 old_log_probs = step.log_probs.to(self.device)
                 ratio = (new_log_probs - old_log_probs).exp()
@@ -289,6 +293,9 @@ class MAPPOTrainer:
         # 旧检查点没有该字段，按历史实现解释为 MSE，继续保持兼容。
         if checkpoint.get("config", {}).get("value_loss_type", "mse") != self.config.value_loss_type:
             raise ValueError("检查点价值损失与当前配置不同，请显式使用同一 value_loss_type")
+        # 缺失字段按原共享梯度解释；错配必须在修改模型及优化器前拒绝。
+        if checkpoint.get("config", {}).get("critic_encoder_mode", "shared") != self.config.critic_encoder_mode:
+            raise ValueError("检查点编码器梯度模式与当前配置不同，请使用同一 critic_encoder_mode")
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.environment_steps = int(checkpoint.get("environment_steps", 0))

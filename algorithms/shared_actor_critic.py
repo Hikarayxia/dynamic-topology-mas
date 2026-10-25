@@ -96,7 +96,8 @@ class SharedGraphActorCritic(nn.Module):
         return actions, log_probs, value
 
     def evaluate_actions(
-        self, observations: Sequence[Observation], actions: Tensor
+        self, observations: Sequence[Observation], actions: Tensor,
+        *, detach_critic_encoder: bool = False,
     ) -> tuple[Tensor, Tensor, Tensor]:
         """重新计算旧动作概率、近似熵和集中式价值，供 PPO 更新使用。"""
 
@@ -106,7 +107,10 @@ class SharedGraphActorCritic(nn.Module):
         raw_actions = torch.atanh(bounded)
         log_probs = self._squashed_log_prob(distribution, raw_actions)
         entropy = distribution.entropy().sum(dim=-1)
-        value = self.critic(embeddings.mean(dim=0, keepdim=True)).squeeze()
+        # 可选隔离仅切断价值损失到共享编码器的梯度；Actor 的路径保持可训练。
+        # 前向数值不变，不增加参数，也不改变推理动作或集中式价值输入。
+        critic_embeddings = embeddings.detach() if detach_critic_encoder else embeddings
+        value = self.critic(critic_embeddings.mean(dim=0, keepdim=True)).squeeze()
         return log_probs, entropy, value
 
     def value(self, observations: Sequence[Observation]) -> Tensor:

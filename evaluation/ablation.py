@@ -139,6 +139,10 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
     loss_type = config["training"].get("value_loss_type", "mse")
     if loss_type not in {"mse", "huber"} or loss_type != arguments.get("value_loss_type", "mse"):
         raise ValueError(f"价值损失配置与训练参数不一致: {run}")
+    encoder_mode = config["training"].get("critic_encoder_mode", "shared")
+    if (encoder_mode not in {"shared", "detached"}
+            or encoder_mode != arguments.get("critic_encoder_mode", "shared")):
+        raise ValueError(f"编码器梯度模式与训练参数不一致: {run}")
     metrics = _read_json(run / "training/training_metrics.jsonl", lines=True)
     if len(metrics) != updates:
         raise ValueError(f"训练日志更新次数不完整: {run}")
@@ -156,8 +160,9 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
         # 签名也规范化历史缺省值，才能让旧完成组与新版 MSE 重跑组共同汇总。
         "arguments": {**{key: value for key, value in arguments.items()
                          if key not in {"seed", "aggregation", "output_dir"}},
-                      "value_loss_type": loss_type},
-        "training": {**config["training"], "value_loss_type": loss_type},
+                      "value_loss_type": loss_type, "critic_encoder_mode": encoder_mode},
+        "training": {**config["training"], "value_loss_type": loss_type,
+                     "critic_encoder_mode": encoder_mode},
         "model": {key: value for key, value in config["model"].items() if key != "aggregation"},
     }
 

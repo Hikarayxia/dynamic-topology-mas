@@ -306,3 +306,24 @@ python scripts/train_mappo.py --updates 100 --rollout-steps 256 --agents 4 --max
 但任务成功率仍为 0；不能据此声称算法已收敛或完成协作搜索。协议、结果、
 兼容性说明与复现命令见
 [`docs/training_stability_2026-10-24.md`](docs/training_stability_2026-10-24.md)。
+
+
+## 价值梯度隔离对照（2026-10-25）
+
+训练支持 `--critic-encoder-mode shared|detached`，默认 `shared` 保持已有行为。
+`detached` 将 Critic 的输入编码在计算价值损失前 detach，保留 Actor 到编码器的
+训练路径；不新增网络参数，不改变观测、动作、奖励或推理的前向值。
+
+```powershell
+python scripts/train_mappo.py --updates 100 --rollout-steps 256 --update-epochs 4 --agents 4 --max-steps 300 --hidden-dim 64 --seed 0 --aggregation attention --value-loss-type huber --critic-encoder-mode detached --output-dir outputs/critic_detached/training
+```
+
+做对照时应显式设置相同的 rollout 步数、PPO epochs 和所有其他参数；批量入口
+`scripts/run_ablation.py` 也接收此选项，默认共享模式与旧计划保持续跑兼容。
+检查点恢复会拒绝梯度模式错配，旧检查点缺失该字段时解释为 `shared`。
+
+该选项只隔离价值损失到编码器的直接梯度，不等同于两个完全独立的网络：
+价值预测仍影响 GAE，Actor 更新仍改变 Critic 所用的表示，全局梯度裁剪也仍会
+影响共同优化。它不增加搜索记忆、角色分工或安全控制能力。
+本轮配对试训、适用限制与原始产物说明见
+[`docs/critic_isolation_2026-10-25.md`](docs/critic_isolation_2026-10-25.md)。

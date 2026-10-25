@@ -209,6 +209,7 @@ def main() -> None:
     parser.add_argument("--rollout-steps", type=int, default=256)
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--value-loss-type", choices=("mse", "huber"), default="mse")
+    parser.add_argument("--critic-encoder-mode", choices=("shared", "detached"), default="shared")
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--episodes", type=int, default=20)
@@ -252,6 +253,9 @@ def main() -> None:
             # 默认 MSE 不添加新参数，使没有该选项的历史计划仍可原样续跑。
             if args.value_loss_type != "mse":
                 train.extend(["--value-loss-type", args.value_loss_type])
+            # 共享模式省略参数，保留既有计划的原配置续跑兼容性。
+            if args.critic_encoder_mode != "shared":
+                train.extend(["--critic-encoder-mode", args.critic_encoder_mode])
             evaluate = [
                 sys.executable, str(PROJECT_ROOT / "scripts" / "evaluate_policies.py"),
                 "--checkpoint", str(train_dir / "mappo_checkpoint.pt"),

@@ -114,7 +114,8 @@ class GraphLearningTests(unittest.TestCase):
             self._observation((NeighborObservation("B", np.ones(5)),)),
         ])
         output = encoder(batch)
-        self.assertTrue(torch.equal(output[0], output[1]))
+        # float32 批量线性代数可能因行布局产生舍入差异，不要求逐位相等。
+        torch.testing.assert_close(output[0], output[1], rtol=1e-6, atol=1e-7)
 
     def test_checkpoint_loader_supports_attention_and_legacy_mean(self) -> None:
         from scripts.evaluate_policies import _load_model
