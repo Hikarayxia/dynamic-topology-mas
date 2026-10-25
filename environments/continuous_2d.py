@@ -15,6 +15,7 @@ from core.environment import BaseEnvironment, StepResult
 from core.message import Message
 from core.observation import NeighborObservation, Observation
 from core.topology import DynamicTopology
+from .coverage_memory import LocalCoverageMemory
 from interaction.communication import (
     CommunicationBus,
     CommunicationConfig,
@@ -46,8 +47,11 @@ class Continuous2DConfig:
     replacement_lane_tolerance: float = 1.0
     neighbor_observation_mode: str = "communicated"
     neighbor_state_ttl: float = 1.0
+    coverage_memory: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.coverage_memory) is not bool:
+            raise ValueError("coverage_memory 必须为布尔值")
         for name in ("width", "height", "dt"):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0:
@@ -188,6 +192,13 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._replacement_roster: dict[str, Hashable] = {}
         self._replacement_roster_count = 0
         self._neighbor_state_cache: dict[Hashable, dict[Hashable, Message]] = {}
+        self._coverage_memories: dict[Hashable, LocalCoverageMemory] = {}
+
+    @property
+    def task_feature_dim(self) -> int:
+        """返回当前观测配置的任务维度；关闭记忆时保留原来的 2 维契约。"""
+
+        return self.TASK_FEATURE_DIM + (LocalCoverageMemory.FEATURE_DIM if self.config.coverage_memory else 0)
 
     @property
     def step_count(self) -> int:
@@ -221,6 +232,8 @@ class Continuous2DSearchEnv(BaseEnvironment):
         super().add_agent(agent, node_id=node_id, node_metadata=node_metadata)
         self.communication.register_endpoint(agent.id, self.node_for_agent(agent.id))
         self._neighbor_state_cache[agent.id] = {}
+        if self.config.coverage_memory:
+            self._coverage_memories[agent.id] = LocalCoverageMemory(self.config.width, self.config.height)
 
     def remove_agent(self, agent_id: Hashable) -> BaseAgent:
         """移除指定智能体及其通信端点，返回被移除对象。
@@ -231,6 +244,7 @@ class Continuous2DSearchEnv(BaseEnvironment):
 
         self.communication.unregister_endpoint(agent_id)
         self._neighbor_state_cache.pop(agent_id, None)
+        self._coverage_memories.pop(agent_id, None)
         # 只清理离开者自己的接收缓存，其他节点保留最后收到的快照直到自然过期。
         return super().remove_agent(agent_id)
 
@@ -272,6 +286,11 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._last_delivery_results = ()
         self._last_info = {}
         self._neighbor_state_cache = {agent_id: {} for agent_id in self._agents}
+        # 每回合单独创建各节点的本机记忆，不能继承上回合或其他节点的搜索轨迹。
+        self._coverage_memories = {
+            agent_id: LocalCoverageMemory(self.config.width, self.config.height)
+            for agent_id in self._agents if self.config.coverage_memory
+        }
         # 补位响应和恢复时间属于单回合实验状态，重置时不得泄漏到下一回合。
         self._replacement_records.clear()
         self._replacement_known_missing = ()
@@ -308,6 +327,7 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._refresh_distance_topology(self.current_time)
         self._broadcast_neighbor_states()
         self._last_delivery_results = self._deliver_messages(self.current_time)
+        self._update_coverage_memory()
         return self._build_observations()
 
     def step(self, actions: Mapping[Hashable, Action]) -> StepResult:
@@ -332,6 +352,7 @@ class Continuous2DSearchEnv(BaseEnvironment):
         self._last_delivery_results = self._deliver_messages(next_time)
 
         newly_discovered = self._detect_targets(next_time)
+        self._update_coverage_memory()
         collision_count = self._count_collisions()
         connectivity = self._connectivity_ratio()
         success = all(target.discovered for target in self._targets)
@@ -582,6 +603,14 @@ class Continuous2DSearchEnv(BaseEnvironment):
             for index, position in enumerate(positions)
         ]
 
+    def _update_coverage_memory(self) -> None:
+        """按实际感知时刻记录在线节点的自身感知圆；离线期间冻结，恢复后延续。"""
+
+        if self.config.coverage_memory:
+            for agent_id, agent in self._agents.items():
+                if agent.state.active:
+                    self._coverage_memories[agent_id].observe(agent.state.position, agent.attributes.sensor_range)
+
     def _build_observations(self) -> dict[Hashable, Observation]:
         observations: dict[Hashable, Observation] = {}
         node_to_agent = {node: agent for agent, node in self._agent_nodes.items()}
@@ -643,16 +672,18 @@ class Continuous2DSearchEnv(BaseEnvironment):
                         },
                     )
                 )
+            task_features = np.asarray([
+                self.detection_ratio, max(0.0, 1.0 - self._step_count / self.config.max_steps),
+            ])
+            if self.config.coverage_memory:
+                # 仅附加本机历史；不读取目标坐标，也不从通信邻居的状态推断其覆盖。
+                task_features = np.concatenate((task_features,
+                    self._coverage_memories[agent_id].features(agent.state.position)))
             observations[agent_id] = Observation(
                 agent_id=agent_id,
                 self_features=self_features,
                 neighbors=tuple(neighbors),
-                task_features=np.asarray(
-                    [
-                        self.detection_ratio,
-                        max(0.0, 1.0 - self._step_count / self.config.max_steps),
-                    ]
-                ),
+                task_features=task_features,
                 topology_version=self.topology.version,
                 timestamp=self.current_time,
                 neighbor_feature_dim=self.NEIGHBOR_FEATURE_DIM,

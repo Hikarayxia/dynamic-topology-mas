@@ -139,6 +139,12 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
     loss_type = config["training"].get("value_loss_type", "mse")
     if loss_type not in {"mse", "huber"} or loss_type != arguments.get("value_loss_type", "mse"):
         raise ValueError(f"价值损失配置与训练参数不一致: {run}")
+    memory = config["environment"].get("coverage_memory", False)
+    profile = config["model"].get("observation_profile", "legacy")
+    if (type(memory) is not bool or memory != arguments.get("coverage_memory", False)
+            or profile != ("local_coverage_v1" if memory else "legacy")
+            or config["model"].get("task_dim") != (20 if memory else 2)):
+        raise ValueError(f"覆盖记忆的参数、环境或模型输入配置不一致: {run}")
     metrics = _read_json(run / "training/training_metrics.jsonl", lines=True)
     if len(metrics) != updates:
         raise ValueError(f"训练日志更新次数不完整: {run}")
@@ -156,7 +162,8 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
         # 签名也规范化历史缺省值，才能让旧完成组与新版 MSE 重跑组共同汇总。
         "arguments": {**{key: value for key, value in arguments.items()
                          if key not in {"seed", "aggregation", "output_dir"}},
-                      "value_loss_type": loss_type},
+                      "value_loss_type": loss_type, "coverage_memory": memory},
+        "environment": {**config["environment"], "coverage_memory": memory},
         "training": {**config["training"], "value_loss_type": loss_type},
         "model": {key: value for key, value in config["model"].items() if key != "aggregation"},
     }
@@ -169,8 +176,19 @@ def _scenarios(run: Path, entry: dict[str, Any]) -> dict[tuple[str, int], dict[s
     if not isinstance(rows, list) or not rows:
         raise ValueError(f"评估场景配置为空: {run}")
     options = _options(entry["evaluate"])
+    # 评估入口会按检查点推断观测类型；离线汇总也必须遵守训练时的实际语义，
+    # 不能让评估命令中的相反开关把不兼容的旧产物误判为可复用结果。
+    training_config = _read_json(run / "training/run_config.json")
+    training_memory = training_config["environment"].get("coverage_memory", False)
+    expected_memory = options.get("coverage_memory", training_memory)
+    if "no_coverage_memory" in options:
+        expected_memory = False
+    if type(training_memory) is not bool or expected_memory != training_memory:
+        raise ValueError(f"评估覆盖记忆配置与实际训练不一致: {run}")
     scenarios = {}
     for row in rows:
+        if isinstance(row, dict):
+            row = {"coverage_memory": False, **row}
         if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not row["name"]:
             raise ValueError(f"评估场景配置无效: {run}")
         for name in ("agent_count", "episodes", "max_steps"):
@@ -189,6 +207,8 @@ def _scenarios(run: Path, entry: dict[str, Any]) -> dict[tuple[str, int], dict[s
                 expected = float(expected)
             if row.get(name) != expected:
                 raise ValueError(f"通信观测配置与计划不一致: {name}, {run}")
+        if type(row["coverage_memory"]) is not bool or row["coverage_memory"] != expected_memory:
+            raise ValueError(f"评估覆盖记忆配置与计划不一致: {run}")
         if row["name"] == "communication_fault":
             for name in ("packet_loss_rate", "base_delay", "delay_jitter", "noise_std"):
                 if row["communication_config"].get(name) != float(options.get(name, 0)):

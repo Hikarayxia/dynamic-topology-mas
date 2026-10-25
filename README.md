@@ -306,3 +306,24 @@ python scripts/train_mappo.py --updates 100 --rollout-steps 256 --agents 4 --max
 但任务成功率仍为 0；不能据此声称算法已收敛或完成协作搜索。协议、结果、
 兼容性说明与复现命令见
 [`docs/training_stability_2026-10-24.md`](docs/training_stability_2026-10-24.md)。
+
+### 可选本机覆盖记忆
+
+训练及多种子入口支持 `--coverage-memory`，默认关闭。启用后，每个智能体只记录
+自身历史感知圆覆盖到的网格中心，并在任务观测中附加附近 3×3 的覆盖标志和
+地图有效掩码，共 18 维。在线记录、离线冻结、恢复延续；移除重加和回合重置
+清空对应记忆。它不读取目标坐标、不共享队友覆盖，也不改变奖励或补位规则。
+
+旧观测保持 2 维任务特征；新观测为 20 维，以 `local_coverage_v1` 标记在检查点中。
+评估自动按模型选择输入，显式开关与模型不符时拒绝运行；旧模型仍可直接评估。
+
+```powershell
+python scripts/train_mappo.py --coverage-memory --value-loss-type huber --updates 100 --rollout-steps 256 --agents 4 --seed 0 --output-dir outputs/coverage_trial/training
+python scripts/evaluate_policies.py --checkpoint outputs/coverage_trial/training/mappo_checkpoint.pt --episodes 20 --agent-counts 4 --seed 40000 --packet-loss-rate 0.3 --base-delay 0.2 --delay-jitter 0.1 --noise-std 0.01 --output-dir outputs/coverage_trial/evaluation_final
+python -m unittest tests.test_coverage_memory -v
+```
+
+本次 25,600 步、单训练种子的真实对照没有显示收益：三个场景的最终成功率均为
+0/20，奖励低于无记忆 Huber 对照，碰撞计数增加。功能保持默认关闭，不能把
+输入表示已实现等同于协作策略已学成。完整协议、文件说明和局限见
+[`docs/coverage_memory_2026-10-25.md`](docs/coverage_memory_2026-10-25.md)。

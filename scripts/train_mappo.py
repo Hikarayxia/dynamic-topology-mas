@@ -24,6 +24,27 @@ from interaction import CommunicationConfig
 from training import MAPPOConfig, MAPPOTrainer
 
 
+def build_model(hidden_dim: int, aggregation: str, *, coverage_memory: bool = False) -> SharedGraphActorCritic:
+    """构造训练模型；新输入零权重初始化，保留共同参数与后续采样随机流。
+
+    参数为隐藏维度、聚合器和可选本机记忆开关，返回共享 Actor-Critic。先生成
+    旧布局，再在隔离随机状态中扩展输入，避免把另一份随机初始策略误作特征对照。
+    """
+
+    base = SharedGraphActorCritic(6, 5, 2, hidden_dim=hidden_dim, aggregation=aggregation)
+    if not coverage_memory:
+        return base
+    with torch.random.fork_rng(devices=[]):
+        model = SharedGraphActorCritic(6, 5, 20, hidden_dim=hidden_dim, aggregation=aggregation,
+                                      observation_profile="local_coverage_v1")
+    state = base.state_dict()
+    extended = torch.zeros_like(model.encoder.task_encoder[0].weight)
+    extended[:, :2] = state["encoder.task_encoder.0.weight"]
+    state["encoder.task_encoder.0.weight"] = extended
+    model.load_state_dict(state)
+    return model
+
+
 def build_environment(
     model: SharedGraphActorCritic, agent_count: int, max_steps: int,
     *,
@@ -40,6 +61,7 @@ def build_environment(
             max_steps=max_steps, n_targets=6,
             neighbor_observation_mode=observation_mode,
             neighbor_state_ttl=neighbor_state_ttl,
+            coverage_memory=model.observation_profile == "local_coverage_v1",
         ),
         communication_config,
     )
@@ -74,6 +96,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--value-loss-type", choices=("mse", "huber"), default="mse",
                         help="价值损失；mse 保持原行为，huber 用于大价值误差的稳健化对照")
+    parser.add_argument("--coverage-memory", action=argparse.BooleanOptionalAction, default=False,
+                        help="附加本机局部覆盖记忆，默认关闭，旧模型输入不变")
     parser.add_argument("--agents", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--hidden-dim", type=int, default=64)
@@ -97,7 +121,7 @@ def main() -> None:
         raise ValueError("updates 和 agents 必须为正整数")
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    model = SharedGraphActorCritic(6, 5, 2, hidden_dim=args.hidden_dim, aggregation=args.aggregation)
+    model = build_model(args.hidden_dim, args.aggregation, coverage_memory=args.coverage_memory)
     environment = build_environment(
         model, args.agents, args.max_steps,
         communication_config=CommunicationConfig(

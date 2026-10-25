@@ -146,6 +146,46 @@ class AblationReportingTests(unittest.TestCase):
         learned = next(row for row in report["rows"] if row["policy"] == "learned")
         self.assertEqual(learned["training_seed_count"], 2)
 
+    def test_coverage_memory_label_must_match_actual_environment_and_model(self):
+        self._fixture(seeds=(0,))
+        self._edit_json("mean/seed_0/training/run_config.json",
+                        lambda value: value["environment"].update(coverage_memory=True))
+        with self.assertRaises(ValueError):
+            self._report()
+
+    def test_opposite_train_and_evaluation_memory_flags_are_rejected(self):
+        for enabled in (True, False):
+            with self.subTest(training_memory=enabled):
+                self._fixture(seeds=(0,))
+                self._edit_json("mean/seed_0/training/run_config.json", lambda value: (
+                    value["arguments"].update(coverage_memory=enabled),
+                    value["environment"].update(coverage_memory=enabled),
+                    value["model"].update(task_dim=20 if enabled else 2,
+                        **({"observation_profile": "local_coverage_v1"} if enabled else {})),
+                ))
+                self._edit_json("ablation_plan.json", lambda rows: (
+                    rows[0]["train"].append("--coverage-memory" if enabled else "--no-coverage-memory"),
+                    rows[0]["evaluate"].append("--no-coverage-memory" if enabled else "--coverage-memory"),
+                ))
+                self._edit_json("mean/seed_0/evaluation/scenario_config.json",
+                                lambda rows: rows[0].update(coverage_memory=not enabled))
+                with self.assertRaises(ValueError):
+                    self._report()
+
+    def test_old_and_new_disabled_coverage_fields_can_be_summarized_together(self):
+        self._fixture(seeds=(0, 1))
+        self._edit_json("mean/seed_0/training/run_config.json",
+                        lambda value: value["environment"].pop("coverage_memory", None))
+        self._edit_json("mean/seed_0/evaluation/scenario_config.json",
+                        lambda rows: rows[0].pop("coverage_memory", None))
+        self._edit_json("mean/seed_1/training/run_config.json",
+                        lambda value: value["arguments"].update(coverage_memory=False))
+        try:
+            report = self._report()
+        except ValueError as error:
+            self.fail(f"旧字段缺省与新字段关闭应为同一观测协议: {error}")
+        self.assertEqual(report["completed_runs"], 2)
+
     def test_missing_events_and_single_seed_do_not_become_zero_variance(self):
         self._fixture(seeds=(0,))
         report = self._report()

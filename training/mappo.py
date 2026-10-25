@@ -289,6 +289,9 @@ class MAPPOTrainer:
         # 旧检查点没有该字段，按历史实现解释为 MSE，继续保持兼容。
         if checkpoint.get("config", {}).get("value_loss_type", "mse") != self.config.value_loss_type:
             raise ValueError("检查点价值损失与当前配置不同，请显式使用同一 value_loss_type")
+        # 相同张量维度不代表观测含义一致，必须在写入模型和优化器前核对版本。
+        if checkpoint.get("model_config", {}).get("observation_profile", "legacy") != self.model.observation_profile:
+            raise ValueError("检查点观测版本与当前模型不同，不能仅按张量维度恢复")
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.environment_steps = int(checkpoint.get("environment_steps", 0))

@@ -40,6 +40,9 @@ def _evaluation(directory: Path) -> tuple[dict, dict]:
     if not isinstance(rows, list) or not rows:
         raise ValueError("评估场景不能为空")
     for row in rows:
+        # 旧场景无此字段，按历史的关闭记忆解释；只规范化读取值，不改原文件。
+        if isinstance(row, dict):
+            row = {"coverage_memory": False, **row}
         if not isinstance(row, dict) or set(row) != {item.name for item in fields(ExperimentScenario)}:
             raise ValueError("评估场景字段不完整")
         for name in ("agent_count", "episodes", "max_steps"):
@@ -177,6 +180,8 @@ def analyze_pilot(
                      "neighbor_observation_mode", "neighbor_state_ttl"):
             if scenario[name] != config["environment"][name]:
                 raise ValueError(f"训练与评估任务定义不一致: {name}")
+        if scenario["coverage_memory"] != config["environment"].get("coverage_memory", False):
+            raise ValueError("训练与评估覆盖记忆配置不一致")
         if scenario["agent_count"] != args["agents"]:
             raise ValueError("本入口只比较同规模试训，规模泛化请使用消融入口")
     if training_seeds & test_seeds:

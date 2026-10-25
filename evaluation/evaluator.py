@@ -57,8 +57,11 @@ class ExperimentScenario:
     communication_config: CommunicationConfig = field(default_factory=CommunicationConfig)
     neighbor_observation_mode: str = "communicated"
     neighbor_state_ttl: float = 1.0
+    coverage_memory: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.coverage_memory) is not bool:
+            raise ValueError("coverage_memory 必须为布尔值")
         if not self.name:
             raise ValueError("场景名称不能为空")
         if self.agent_count <= 0 or self.episodes <= 0 or self.max_steps <= 0:
@@ -133,9 +136,14 @@ def _build_environment(
             n_targets=scenario.n_targets,
             neighbor_observation_mode=scenario.neighbor_observation_mode,
             neighbor_state_ttl=scenario.neighbor_state_ttl,
+            coverage_memory=scenario.coverage_memory,
         ),
         scenario.communication_config,
     )
+    if policy == "learned" and model is not None:
+        enabled = model.observation_profile == "local_coverage_v1"
+        if enabled != scenario.coverage_memory or model.encoder.task_dim != environment.task_feature_dim:
+            raise ValueError("模型观测配置与评估场景不一致")
     attributes = AgentAttributes(
         agent_type="uav",
         max_speed=3.0,

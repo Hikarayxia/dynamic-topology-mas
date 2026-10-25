@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--hidden-dim", type=int, default=64)
+    parser.add_argument("--coverage-memory", action=argparse.BooleanOptionalAction, default=None,
+                        help="不指定时按检查点自动选择；显式指定必须与检查点一致")
     parser.add_argument("--observation-mode", choices=("communicated", "oracle"), default="communicated")
     parser.add_argument("--neighbor-state-ttl", type=float, default=1.0)
     parser.add_argument("--packet-loss-rate", type=float, default=0.0)
@@ -104,6 +106,7 @@ def _scenarios(args: argparse.Namespace) -> list[ExperimentScenario]:
     return [replace(
         scenario, neighbor_observation_mode=args.observation_mode,
         neighbor_state_ttl=args.neighbor_state_ttl,
+        coverage_memory=bool(getattr(args, "coverage_memory", False)),
     ) for scenario in scenarios]
 
 
@@ -138,6 +141,13 @@ def main() -> None:
     checkpoint_bytes = args.checkpoint.read_bytes() if args.checkpoint else None
     model = (_load_model(args.checkpoint, args.hidden_dim, checkpoint_bytes=checkpoint_bytes)
              if args.checkpoint else None)
+    if model is not None:
+        enabled = model.observation_profile == "local_coverage_v1"
+        if args.coverage_memory is not None and args.coverage_memory != enabled:
+            raise ValueError("显式 coverage-memory 与检查点观测配置不一致")
+        args.coverage_memory = enabled
+    else:
+        args.coverage_memory = bool(args.coverage_memory)
     # 规则基线与协作补位策略始终使用相同场景比较；只有显式提供检查点时才加入
     # 学习策略，避免未训练模型被误当成有效实验组。
     policies = ["rule", "replacement"]

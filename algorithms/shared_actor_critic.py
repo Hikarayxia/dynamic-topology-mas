@@ -29,10 +29,16 @@ class SharedGraphActorCritic(nn.Module):
         action_dim: int = 2,
         hidden_dim: int = 64,
         aggregation: str = "mean",
+        observation_profile: str = "legacy",
     ) -> None:
         super().__init__()
         if action_dim <= 0:
             raise ValueError("action_dim 必须为正整数")
+        if observation_profile not in {"legacy", "local_coverage_v1"}:
+            raise ValueError("不支持的 observation_profile")
+        if observation_profile == "local_coverage_v1" and (self_dim, neighbor_dim, task_dim) != (6, 5, 20):
+            raise ValueError("local_coverage_v1 要求自身/邻居/任务维度为 6/5/20")
+        self.observation_profile = observation_profile
         self.action_dim = action_dim
         self.encoder = GraphObservationEncoder(
             self_dim, neighbor_dim, task_dim, hidden_dim, aggregation
@@ -54,7 +60,7 @@ class SharedGraphActorCritic(nn.Module):
     def architecture_config(self) -> dict[str, int | str]:
         """返回重建模型所需维度，随检查点保存以避免评估配置错配。"""
 
-        return {
+        config = {
             "self_dim": self.encoder.self_dim,
             "neighbor_dim": self.encoder.neighbor_dim,
             "task_dim": self.encoder.task_dim,
@@ -62,6 +68,10 @@ class SharedGraphActorCritic(nn.Module):
             "hidden_dim": self.encoder.hidden_dim,
             "aggregation": self.encoder.aggregation,
         }
+        # 旧模型保持原配置字典不变；只有启用新输入的检查点才显式标记版本。
+        if self.observation_profile != "legacy":
+            config["observation_profile"] = self.observation_profile
+        return config
 
     def encode(self, observations: Sequence[Observation]) -> Tensor:
         """编码一个时间步内所有在线智能体的观测。"""
