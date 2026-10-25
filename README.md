@@ -327,3 +327,18 @@ python -m unittest tests.test_coverage_memory -v
 0/20，奖励低于无记忆 Huber 对照，碰撞计数增加。功能保持默认关闭，不能把
 输入表示已实现等同于协作策略已学成。完整协议、文件说明和局限见
 [`docs/coverage_memory_2026-10-25.md`](docs/coverage_memory_2026-10-25.md)。
+
+### 可重复的训练诊断
+
+`scripts/diagnose_training.py` 从检查点和原训练配置重建采样环境，检查更新前
+概率一致性、Actor/Critic 的共享编码器梯度、动作趋同程度，以及覆盖历史的变化
+与输入敏感性。它不执行优化器更新，报告包含模型和配置的 SHA-256；输出目录
+必须尚不存在。
+
+```powershell
+python scripts/diagnose_training.py --checkpoint outputs/coverage_trial/training/mappo_checkpoint.pt --run-config outputs/coverage_trial/training/run_config.json --seed 30000 --rollout-steps 256 --output-dir outputs/coverage_trial/diagnostics/seed_30000
+```
+
+四个真实检查点、三个独立诊断轨迹种子的结果见
+[`docs/training_diagnostics_2026-10-25.md`](docs/training_diagnostics_2026-10-25.md)。
+这些轨迹种子不是独立训练种子，诊断信号也不替代任务成功率评估。
