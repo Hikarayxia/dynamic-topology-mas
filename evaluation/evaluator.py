@@ -206,8 +206,9 @@ def run_episode(
     policy: Literal["rule", "replacement", "learned"],
     episode: int,
     model: SharedGraphActorCritic | None = None,
+    trajectory: list[dict] | None = None,
 ) -> EpisodeMetrics:
-    """执行一个不参与训练的独立评估回合。"""
+    """执行独立评估，返回回合指标；可选 trajectory 只接收真实步进快照。"""
 
     seed = scenario.base_seed + episode
     environment = _build_environment(scenario, policy, model)
@@ -221,7 +222,14 @@ def run_episode(
             )
             for agent_id, observation in observations.items()
         }
+        positions_before = ({agent_id: agent.state.position.copy()
+                             for agent_id, agent in environment.agents.items()}
+                            if trajectory is not None else None)
         result = environment.step(actions)
+        if trajectory is not None:
+            # 记录发生在动作执行之后，快照不进入策略观测或下一步动作选择。
+            from .trajectory import motion_snapshot
+            trajectory.append(motion_snapshot(environment, actions, positions_before, result.info))
         velocities = [
             agent.state.velocity
             for agent in environment.agents.values()

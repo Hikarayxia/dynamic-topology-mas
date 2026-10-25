@@ -118,12 +118,16 @@ def _training_complete(root: Path, entry: dict) -> tuple[bool, str]:
 
     import torch
     from algorithms import SharedGraphActorCritic
+    from environments import Continuous2DSearchEnv
     from evaluation.ablation import _read_json, _training_signature
 
     run = _run_directory(root, entry)
     try:
         _training_signature(run, entry)
         config = _read_json(run / "training/run_config.json")
+        # 修复边界状态后，旧轨迹不再是当前环境下的训练，必须保留归档再重跑。
+        if config.get("motion_profile", "command_velocity_v1") != Continuous2DSearchEnv.MOTION_PROFILE:
+            raise ValueError("训练运动语义已变化，不能在当前环境续用旧阶段")
         # 不反序列化自定义 Python 对象；续跑只需要本框架保存的张量和基础配置。
         checkpoint = torch.load(run / "training/mappo_checkpoint.pt", map_location="cpu", weights_only=True)
         expected_steps = config["arguments"]["updates"] * config["training"]["rollout_steps"]

@@ -69,6 +69,17 @@ class AblationResumeTests(unittest.TestCase):
         self.assertIn("计划", result.stderr)
         self.assertEqual(self.hashes(self.run_dir), before)
 
+    def test_resume_preview_does_not_reuse_old_motion_training(self):
+        path = self.run_dir / "training/run_config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["motion_profile"] = "command_velocity_v1"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        before = self.hashes(self.run_dir)
+        result = self.invoke("--resume", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("训练=重跑", result.stdout)
+        self.assertEqual(self.hashes(self.run_dir), before)
+
     def test_incomplete_evaluation_is_archived_and_retried_without_retraining(self):
         source = self.run_dir / "evaluation/episode_metrics.jsonl"
         lines = source.read_text(encoding="utf-8").splitlines()

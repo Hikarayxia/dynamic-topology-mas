@@ -156,6 +156,8 @@ def analyze_pilot(
         if not directory.is_relative_to(root):
             raise ValueError("评估目录必须位于本次试训根目录内")
         metadata = _read_json(directory / "evaluation_provenance.json")
+        if metadata.get("motion_profile", "command_velocity_v1") != config.get("motion_profile", "command_velocity_v1"):
+            raise ValueError("训练与评估运动语义不同；请使用运动对照入口，不能标为同环境试训")
         checkpoint_path = root / ("initial" if stage == "initial" else "training") / "mappo_checkpoint.pt"
         if (metadata.get("schema_version") != 1 or metadata.get("deterministic") is not True
                 or metadata.get("model_config") != config["model"]
@@ -211,6 +213,7 @@ def analyze_pilot(
             ))
     window = min(10, len(metrics))
     return dict(
+        motion_profile=config.get("motion_profile", "command_velocity_v1"),
         training_seed_count=1, training_seed=args["seed"],
         training=dict(environment_steps=metrics[-1]["environment_steps"], updates=len(metrics),
                       episodes_finished=finished,

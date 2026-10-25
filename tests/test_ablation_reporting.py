@@ -153,6 +153,25 @@ class AblationReportingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._report()
 
+    def test_evaluation_with_other_motion_semantics_is_rejected(self):
+        self._fixture(seeds=(0,))
+        self._json(self.root / "mean/seed_0/evaluation/evaluation_provenance.json",
+                   dict(motion_profile="displacement_velocity_v2"))
+        with self.assertRaises(ValueError):
+            self._report()
+
+    def test_malformed_training_config_is_rejected_as_value_error(self):
+        for malformed in ([], {"motion_profile": []}):
+            with self.subTest(malformed=malformed):
+                self._fixture(seeds=(0,))
+                path = self.root / "mean/seed_0/training/run_config.json"
+                if isinstance(malformed, list):
+                    self._json(path, malformed)
+                else:
+                    self._edit_json("mean/seed_0/training/run_config.json", lambda value: value.update(malformed))
+                with self.assertRaises(ValueError):
+                    self._report()
+
     def test_opposite_train_and_evaluation_memory_flags_are_rejected(self):
         for enabled in (True, False):
             with self.subTest(training_memory=enabled):

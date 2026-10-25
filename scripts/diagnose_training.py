@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from algorithms import SharedGraphActorCritic
-from environments import Continuous2DConfig
+from environments import Continuous2DConfig, Continuous2DSearchEnv
 from evaluation.ablation import _finite_float, _reject_constant
 from interaction import CommunicationConfig
 from scripts.train_mappo import build_environment
@@ -26,17 +26,26 @@ from training import MAPPOConfig, MAPPOTrainer
 from training.diagnostics import diagnose_rollout
 
 
-def run_diagnostic(checkpoint: Path, run_config: Path, *, seed: int, rollout_steps: int | None = None) -> dict:
+def run_diagnostic(checkpoint: Path, run_config: Path, *, seed: int, rollout_steps: int | None = None,
+                   allow_motion_shift: bool = False) -> dict:
     """加载同一份源字节并采样，返回带来源指纹的报告；不写磁盘。
 
     参数为已保存的模型、训练配置、独立诊断种子和可选采样步数。环境沿用原
-    训练入口的故障及通信设置；不读取评估成绩选择样本，不恢复优化器或续训。
+    训练入口的故障及通信设置；allow_motion_shift 显式允许并标记运动语义变化，
+    此时不再声称复现原训练环境。不读取评估成绩选样本，不恢复优化器或续训。
     """
 
     if seed < 0 or (rollout_steps is not None and rollout_steps <= 0):
         raise ValueError("种子必须非负，诊断采样步数必须为正")
     checkpoint_bytes, config_bytes = checkpoint.read_bytes(), run_config.read_bytes()
     config = json.loads(config_bytes.decode("utf-8-sig"), parse_constant=_reject_constant, parse_float=_finite_float)
+    training_profile = config.get("motion_profile", "command_velocity_v1")
+    current_profile = Continuous2DSearchEnv.MOTION_PROFILE
+    if training_profile not in {"command_velocity_v1", current_profile}:
+        raise ValueError("不支持的训练运动语义版本")
+    motion_shift = training_profile != current_profile
+    if motion_shift and not allow_motion_shift:
+        raise ValueError("运动语义与原训练不同；显式 --allow-motion-shift 才可执行跨环境诊断")
     data = torch.load(BytesIO(checkpoint_bytes), map_location="cpu", weights_only=True)
     model = SharedGraphActorCritic(**data["model_config"])
     model.load_state_dict(data["model"])
@@ -81,6 +90,7 @@ def run_diagnostic(checkpoint: Path, run_config: Path, *, seed: int, rollout_ste
     result = diagnose_rollout(trainer, rollout)
     return dict(
         schema_version=1, checkpoint_sha256=hashlib.sha256(checkpoint_bytes).hexdigest(),
+        motion_profile=current_profile, training_motion_profile=training_profile, motion_shift=motion_shift,
         run_config_sha256=hashlib.sha256(config_bytes).hexdigest(),
         checkpoint_environment_steps=data.get("environment_steps"),
         model_config=model.architecture_config(), diagnostic_seed=seed,
@@ -88,7 +98,8 @@ def run_diagnostic(checkpoint: Path, run_config: Path, *, seed: int, rollout_ste
         communication=asdict(communication), link_fault=arguments["link_fault"], node_fault=arguments["node_fault"],
         episodes_finished=finished, successful_episodes=successful,
         torch_version=str(torch.__version__), numpy_version=np.__version__, diagnostics=result,
-        warnings=["诊断轨迹按随机策略采样，动作敏感性按确定性策略计算，均不替代独立任务评估。",
+        warnings=(["运动语义已改变：本次为旧模型在新环境中的诊断，不是原训练环境的复现。"] if motion_shift else [])
+        + ["诊断轨迹按随机策略采样，动作敏感性按确定性策略计算，均不替代独立任务评估。",
                   "共享梯度比较不含熵项；梯度大小和夹角是局部信号，不证明退化的唯一原因。",
                   "覆盖标志清零是输入消融，可能离开训练分布，不表示历史信息的任务收益。"],
     )
@@ -102,12 +113,14 @@ def main() -> None:
     parser.add_argument("--run-config", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=30000)
     parser.add_argument("--rollout-steps", type=int)
+    parser.add_argument("--allow-motion-shift", action="store_true", help="显式允许旧模型在新运动语义下诊断，并记录变化")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.output_dir.exists():
             raise ValueError("诊断输出目录已存在，请使用新目录")
-        report = run_diagnostic(args.checkpoint, args.run_config, seed=args.seed, rollout_steps=args.rollout_steps)
+        report = run_diagnostic(args.checkpoint, args.run_config, seed=args.seed, rollout_steps=args.rollout_steps,
+                                allow_motion_shift=args.allow_motion_shift)
         # 先完成数值与来源检查，再创建目录，失败时不留下貌似完成的报告。
         content = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
         args.output_dir.mkdir(parents=True, exist_ok=False)

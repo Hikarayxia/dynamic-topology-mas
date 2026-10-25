@@ -342,3 +342,22 @@ python scripts/diagnose_training.py --checkpoint outputs/coverage_trial/training
 四个真实检查点、三个独立诊断轨迹种子的结果见
 [`docs/training_diagnostics_2026-10-25.md`](docs/training_diagnostics_2026-10-25.md)。
 这些轨迹种子不是独立训练种子，诊断信号也不替代任务成功率评估。
+
+### 边界运动与故障恢复修正
+
+连续环境现在以实际位移除以时间步长记录状态速度。贴墙被阻挡时速度为零，
+沿墙运动保留切向速度，恢复节点在尚未执行新动作时也不会携带离线前速度。
+能耗仍按指令努力量计算。训练配置和评估来源记录 `displacement_velocity_v2`，
+历史缺失字段按 `command_velocity_v1` 解释；两种语义不会静默混合汇总。
+
+运动评估入口会保存每回合边界统计，以及选定回合的指令/位移/状态速度和轨迹图：
+
+```powershell
+python scripts/evaluate_motion.py --checkpoint outputs/coverage_trial/training/mappo_checkpoint.pt --episodes 20 --agent-counts 4 --max-steps 300 --seed 50000 --trajectory-episodes 1 --packet-loss-rate 0.3 --base-delay 0.2 --delay-jitter 0.1 --noise-std 0.01 --output-dir outputs/motion_review
+python -m unittest tests.test_motion_consistency -v
+```
+
+旧运动实验在当前环境下续跑时会保留归档并重跑训练阶段，建议使用新输出目录。
+诊断旧模型需显式 `--allow-motion-shift`，报告会标记它是新环境诊断；复现前两轮
+历史表格应使用对应历史版本。完整修复、真实配对结果和复现说明见
+[`docs/boundary_motion_2026-10-25.md`](docs/boundary_motion_2026-10-25.md)。

@@ -163,6 +163,8 @@ class Continuous2DSearchEnv(BaseEnvironment):
     SELF_FEATURE_DIM = 6
     NEIGHBOR_FEATURE_DIM = 5
     TASK_FEATURE_DIM = 2
+    # 环境语义随结果记录；旧文件缺省为 command_velocity_v1，不能与本版混算。
+    MOTION_PROFILE = "displacement_velocity_v2"
 
     def __init__(
         self,
@@ -337,6 +339,11 @@ class Continuous2DSearchEnv(BaseEnvironment):
             raise RuntimeError("回合已经结束，请先调用 reset()")
         self.validate_action_batch(actions)
 
+        # 未执行动作的节点本步没有位移；尤其是离线后在步末恢复的节点，
+        # 不能把失联前的速度继续当作当前运动状态发送给新邻居。
+        for agent_id, agent in self._agents.items():
+            if agent_id not in actions:
+                agent.state.velocity = np.zeros(2, dtype=np.float64)
         for agent_id, action in actions.items():
             self.apply_action(agent_id, action)
 
@@ -441,15 +448,19 @@ class Continuous2DSearchEnv(BaseEnvironment):
         if norm > 1.0:
             command = command / norm
         velocity = command * agent.attributes.max_speed
-        new_position = agent.state.position + velocity * self.config.dt
+        previous_position = agent.state.position.copy()
+        new_position = previous_position + velocity * self.config.dt
         agent.state.position = np.clip(
             new_position,
             [0.0, 0.0],
             [self.config.width, self.config.height],
         )
-        agent.state.velocity = velocity
-        if np.linalg.norm(velocity) > 0:
-            agent.state.yaw = math.atan2(velocity[1], velocity[0])
+        # 边界截断后，状态和通信中的速度应反映本步真实位移，而不是未执行的指令。
+        # 部分越界时记录时间步平均速度；完全静止时保留原朝向，避免虚假转向。
+        agent.state.velocity = (agent.state.position - previous_position) / self.config.dt
+        if np.linalg.norm(agent.state.velocity) > 0:
+            agent.state.yaw = math.atan2(agent.state.velocity[1], agent.state.velocity[0])
+        # 能耗沿用执行器指令努力量口径；贴墙仍施加指令不等于零控制消耗。
         agent.state.energy = max(
             0.0,
             agent.state.energy

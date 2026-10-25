@@ -144,6 +144,7 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     run_config = {
+        "motion_profile": environment.MOTION_PROFILE,
         "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
         "model": model.architecture_config(),
         "environment": asdict(environment.config),

@@ -1,7 +1,7 @@
 """训练诊断的手算、只读契约与真实入口测试；临时数据不作为研究结果。"""
 
 import copy
-from dataclasses import replace
+from dataclasses import asdict, replace
 import importlib
 import json
 from pathlib import Path
@@ -116,6 +116,28 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         trainer, _ = self._sample()
         with self.assertRaises(ValueError):
             self._module().diagnose_rollout(trainer, [])
+
+    def test_motion_shift_requires_explicit_opt_in_and_is_recorded(self):
+        module = importlib.import_module("scripts.diagnose_training")
+        trainer, _ = self._sample()
+        environment = build_environment(trainer.model, 2, 5)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = trainer.save_checkpoint(root / "model.pt")
+            config = root / "run_config.json"
+            config.write_text(json.dumps(dict(
+                motion_profile="command_velocity_v1", model=trainer.model.architecture_config(),
+                training=asdict(trainer.config), environment=asdict(environment.config),
+                communication=asdict(environment.communication_config), arguments=dict(
+                    seed=19, agents=2, max_steps=5, coverage_memory=True, observation_mode="communicated",
+                    neighbor_state_ttl=1.0, link_fault=True, node_fault=True),
+            )), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                module.run_diagnostic(checkpoint, config, seed=30000)
+            report = module.run_diagnostic(checkpoint, config, seed=30000, allow_motion_shift=True)
+            self.assertEqual(report["training_motion_profile"], "command_velocity_v1")
+            self.assertNotEqual(report["motion_profile"], report["training_motion_profile"])
+            self.assertTrue(report["motion_shift"])
 
     def test_cli_is_reproducible_and_refuses_overwrite_or_mismatched_configuration(self):
         self._module()

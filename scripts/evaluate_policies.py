@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from algorithms import SharedGraphActorCritic
+from environments import Continuous2DSearchEnv
 from evaluation.evaluator import (
     ExperimentScenario,
     LinkFaultSpec,
@@ -179,6 +180,7 @@ def main() -> None:
     paths = save_evaluation_results(args.output_dir, all_episodes, summaries)
     provenance = dict(
         schema_version=1,
+        motion_profile=Continuous2DSearchEnv.MOTION_PROFILE,
         checkpoint_sha256=(hashlib.sha256(checkpoint_bytes).hexdigest()
                            if checkpoint_bytes is not None else None),
         model_config=model.architecture_config() if model is not None else None,

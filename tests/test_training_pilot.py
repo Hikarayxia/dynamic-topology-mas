@@ -159,6 +159,14 @@ class TrainingPilotTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._analyze()
 
+    def test_rejects_evaluation_with_different_motion_semantics(self):
+        path = self.root / "evaluation_final/evaluation_provenance.json"
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        metadata["motion_profile"] = "displacement_velocity_v2"
+        self._json(path, metadata)
+        with self.assertRaises(ValueError):
+            self._analyze()
+
     def test_rejects_changed_baseline(self):
         self._edit_records(lambda rows: rows[0].update(cumulative_team_reward=123))
         with self.assertRaisesRegex(ValueError, "基线"):

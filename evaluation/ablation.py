@@ -112,6 +112,9 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
     for section in ("arguments", "model", "environment", "communication", "training"):
         if not isinstance(config, dict) or not isinstance(config.get(section), dict):
             raise ValueError(f"训练配置缺少 {section}: {run}")
+    motion_profile = config.get("motion_profile", "command_velocity_v1")
+    if not isinstance(motion_profile, str) or motion_profile not in {"command_velocity_v1", "displacement_velocity_v2"}:
+        raise ValueError(f"不支持的运动语义版本: {run}")
     arguments = config["arguments"]
     if arguments.get("seed") != entry["seed"] or any(
         section.get("aggregation") != entry["aggregation"]
@@ -159,6 +162,7 @@ def _training_signature(run: Path, entry: dict[str, Any]) -> dict[str, Any]:
     # 种子、聚合器、输出路径是组间允许的差异，其余实际配置必须完全一致。
     return {
         **config,
+        "motion_profile": motion_profile,
         # 签名也规范化历史缺省值，才能让旧完成组与新版 MSE 重跑组共同汇总。
         "arguments": {**{key: value for key, value in arguments.items()
                          if key not in {"seed", "aggregation", "output_dir"}},
@@ -179,6 +183,10 @@ def _scenarios(run: Path, entry: dict[str, Any]) -> dict[tuple[str, int], dict[s
     # 评估入口会按检查点推断观测类型；离线汇总也必须遵守训练时的实际语义，
     # 不能让评估命令中的相反开关把不兼容的旧产物误判为可复用结果。
     training_config = _read_json(run / "training/run_config.json")
+    metadata_path = run / "evaluation/evaluation_provenance.json"
+    metadata = _read_json(metadata_path) if metadata_path.exists() else {}
+    if metadata.get("motion_profile", "command_velocity_v1") != training_config.get("motion_profile", "command_velocity_v1"):
+        raise ValueError(f"训练与评估的运动语义不同，不能作为同一消融协议汇总: {run}")
     training_memory = training_config["environment"].get("coverage_memory", False)
     expected_memory = options.get("coverage_memory", training_memory)
     if "no_coverage_memory" in options:
